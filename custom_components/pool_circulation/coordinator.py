@@ -199,26 +199,26 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         return False
 
     def _too_cold_to_circulate(self) -> bool:
-        """Return True if outdoor temp is below the algae growth threshold.
+        """Return True if pool water temp is below the algae growth threshold.
 
-        Outdoor temperature is the deciding factor — algae need warm air to
-        grow, so if it's cold outside circulation isn't needed for biological
-        reasons even if the pool water is still warm.
+        Pool water temperature decides algae risk — algae grow in the water,
+        not in the air. Above the threshold circulation is needed; below it
+        there is no biological reason to run the pump.
 
-        If no outdoor sensor is configured the skip is never triggered (safe
-        default: always circulate when in doubt).
-        Pool temp sensor is informational only and does not affect this logic.
+        Outdoor temp is used only for freeze protection, not here.
+        If no pool temp sensor is configured the skip is never triggered
+        (safe default: always circulate when in doubt).
         """
         threshold = self.cfg.get(CONF_TEMP_ALGAE_THRESHOLD, DEFAULT_TEMP_ALGAE_THRESHOLD)
-        outdoor = self._state_float(CONF_SENSOR_OUTDOOR_TEMP)
+        pool = self._state_float(CONF_SENSOR_POOL_TEMP)
 
-        if outdoor is None:
-            return False  # no outdoor sensor — don't skip
+        if pool is None:
+            return False  # no pool sensor — don't skip
 
-        if outdoor < threshold:
+        if pool < threshold:
             _LOGGER.debug(
-                "Algae skip active: outdoor temp %.1f°C < %.1f°C threshold",
-                outdoor,
+                "Algae skip active: pool temp %.1f°C < %.1f°C threshold",
+                pool,
                 threshold,
             )
             return True

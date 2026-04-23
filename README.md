@@ -12,7 +12,7 @@ A Home Assistant custom component that automatically controls your pool circulat
 |---|---|
 | **Price-based scheduling** | Runs at high RPM + heat pump during best-price windows; stops during peak prices |
 | **Daily hours guarantee** | Must-run override kicks in when the daily target can't be met any other way |
-| **Algae skip** | Skips circulation when outdoor temp is below the algae growth threshold (outdoor is the deciding sensor) |
+| **Algae skip** | Skips circulation when pool water temp is below the algae growth threshold — pool temp decides, outdoor temp is only used for freeze protection |
 | **Freeze protection** | Forces low-speed circulation when outdoor temp drops to freeze threshold — overrides everything |
 | **Heat pump control** | Turns heat pump on/off via any `climate` entity |
 | **3-speed RPM control** | Maps low / medium / high RPM to individual switches |
@@ -32,12 +32,12 @@ Every hour at HH:00, the coordinator evaluates price signals and sets one of fou
 | `low` | **Freeze protection** — outdoor temp ≤ freeze threshold | Low RPM ON | OFF |
 | `high` | Best-price period active | High RPM switch ON | ON |
 | `medium` | Normal price, hours still needed | Medium RPM switch ON | OFF |
-| `off` | Peak price, daily target met, or **algae skip** (outdoor temp below algae threshold) | All switches OFF | OFF |
+| `off` | Peak price, daily target met, or **algae skip** (pool water temp below algae threshold) | All switches OFF | OFF |
 
 **Priority order (highest → lowest):**
 1. **Freeze protection** — outdoor temp ≤ freeze threshold (default 2°C) → forces `low`, ignores everything else
 2. **Automation switch off** → holds current mode
-3. **Algae skip** — outdoor temp below algae threshold (default 8°C) → `off` (pool temp sensor is informational only; outdoor temp decides)
+3. **Algae skip** — pool water temp below algae threshold (default 8°C) → `off` (outdoor temp is used only for freeze protection)
 4. **Price logic** — peak → `off`, best → `high`, normal → `medium` if hours still needed
 5. **Must-run override** — hours needed ≥ hours left today → forces `medium` regardless of price
 
