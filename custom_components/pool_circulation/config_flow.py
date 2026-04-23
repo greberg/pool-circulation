@@ -11,18 +11,24 @@ from .const import (
     CONF_BINARY_PEAK_PRICE,
     CONF_CLIMATE_HEAT_PUMP,
     CONF_DAILY_HOURS,
+    CONF_SENSOR_OUTDOOR_TEMP,
+    CONF_SENSOR_POOL_TEMP,
     CONF_SENSOR_PRICE,
     CONF_SENSOR_PRICE_LEVEL,
     CONF_SWITCH_CIRCULATION,
     CONF_SWITCH_RPM_HIGH,
     CONF_SWITCH_RPM_LOW,
     CONF_SWITCH_RPM_MEDIUM,
+    CONF_TEMP_ALGAE_THRESHOLD,
+    CONF_TEMP_FREEZE_THRESHOLD,
     DEFAULT_BINARY_BEST_PRICE,
     DEFAULT_BINARY_PEAK_PRICE,
     DEFAULT_DAILY_HOURS,
     DEFAULT_NAME,
     DEFAULT_SENSOR_PRICE,
     DEFAULT_SENSOR_PRICE_LEVEL,
+    DEFAULT_TEMP_ALGAE_THRESHOLD,
+    DEFAULT_TEMP_FREEZE_THRESHOLD,
     DOMAIN,
 )
 
@@ -44,6 +50,15 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         vol.Required(CONF_DAILY_HOURS, default=DEFAULT_DAILY_HOURS): vol.All(
             vol.Coerce(int), vol.Range(min=0, max=24)
         ),
+        # Temperature sensors for cold-weather override
+        vol.Optional(CONF_SENSOR_OUTDOOR_TEMP, default=""): str,
+        vol.Optional(CONF_SENSOR_POOL_TEMP, default=""): str,
+        vol.Optional(
+            CONF_TEMP_ALGAE_THRESHOLD, default=DEFAULT_TEMP_ALGAE_THRESHOLD
+        ): vol.Coerce(float),
+        vol.Optional(
+            CONF_TEMP_FREEZE_THRESHOLD, default=DEFAULT_TEMP_FREEZE_THRESHOLD
+        ): vol.Coerce(float),
     }
 )
 
@@ -103,6 +118,22 @@ class PoolCirculationOptionsFlow(config_entries.OptionsFlow):
                     CONF_SENSOR_PRICE,
                     default=cfg.get(CONF_SENSOR_PRICE, DEFAULT_SENSOR_PRICE),
                 ): str,
+                vol.Optional(
+                    CONF_SENSOR_OUTDOOR_TEMP,
+                    default=cfg.get(CONF_SENSOR_OUTDOOR_TEMP, ""),
+                ): str,
+                vol.Optional(
+                    CONF_SENSOR_POOL_TEMP,
+                    default=cfg.get(CONF_SENSOR_POOL_TEMP, ""),
+                ): str,
+                vol.Optional(
+                    CONF_TEMP_ALGAE_THRESHOLD,
+                    default=cfg.get(CONF_TEMP_ALGAE_THRESHOLD, DEFAULT_TEMP_ALGAE_THRESHOLD),
+                ): vol.Coerce(float),
+                vol.Optional(
+                    CONF_TEMP_FREEZE_THRESHOLD,
+                    default=cfg.get(CONF_TEMP_FREEZE_THRESHOLD, DEFAULT_TEMP_FREEZE_THRESHOLD),
+                ): vol.Coerce(float),
             }
         )
 

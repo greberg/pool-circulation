@@ -17,14 +17,20 @@ from .const import (
     CONF_BINARY_PEAK_PRICE,
     CONF_CLIMATE_HEAT_PUMP,
     CONF_DAILY_HOURS,
+    CONF_SENSOR_OUTDOOR_TEMP,
+    CONF_SENSOR_POOL_TEMP,
     CONF_SENSOR_PRICE,
     CONF_SENSOR_PRICE_LEVEL,
     CONF_SWITCH_CIRCULATION,
     CONF_SWITCH_RPM_HIGH,
     CONF_SWITCH_RPM_LOW,
     CONF_SWITCH_RPM_MEDIUM,
+    CONF_TEMP_ALGAE_THRESHOLD,
+    CONF_TEMP_FREEZE_THRESHOLD,
     COORDINATOR_UPDATE_INTERVAL,
     DEFAULT_DAILY_HOURS,
+    DEFAULT_TEMP_ALGAE_THRESHOLD,
+    DEFAULT_TEMP_FREEZE_THRESHOLD,
     DOMAIN,
     EVENT_MODE_CHANGED,
     MODE_HIGH,
@@ -172,10 +178,67 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
     # ------------------------------------------------------------------
     # Mode decision
     # ------------------------------------------------------------------
+    def _freeze_risk(self) -> bool:
+        """Return True if outdoor temp is at or below the freeze threshold.
+
+        When True the pump must run at low speed to keep water moving and
+        prevent the pool and pipes from freezing. This overrides ALL other
+        logic — price, algae skip, automation switch.
+        """
+        threshold = self.cfg.get(CONF_TEMP_FREEZE_THRESHOLD, DEFAULT_TEMP_FREEZE_THRESHOLD)
+        outdoor = self._state_float(CONF_SENSOR_OUTDOOR_TEMP)
+        if outdoor is None:
+            return False
+        if outdoor <= threshold:
+            _LOGGER.warning(
+                "Freeze protection active: outdoor temp %.1f°C ≤ %.1f°C threshold",
+                outdoor,
+                threshold,
+            )
+            return True
+        return False
+
+    def _too_cold_to_circulate(self) -> bool:
+        """Return True if all configured temperature sensors are below the algae
+        growth threshold — no chemical or biological reason to run the pump.
+
+        Logic: if ANY configured sensor reads AT OR ABOVE the threshold, algae
+        can grow and we should circulate. Only block if every sensor we have
+        confirms it's cold enough to skip.
+        """
+        threshold = self.cfg.get(CONF_TEMP_ALGAE_THRESHOLD, DEFAULT_TEMP_ALGAE_THRESHOLD)
+        outdoor = self._state_float(CONF_SENSOR_OUTDOOR_TEMP)
+        pool = self._state_float(CONF_SENSOR_POOL_TEMP)
+
+        if outdoor is None and pool is None:
+            return False  # no sensors configured — don't block
+
+        if outdoor is not None and outdoor >= threshold:
+            return False
+        if pool is not None and pool >= threshold:
+            return False
+
+        # All configured sensors below threshold
+        temps = [t for t in (outdoor, pool) if t is not None]
+        _LOGGER.debug(
+            "Cold override active: temps %s all below %.1f°C threshold",
+            temps,
+            threshold,
+        )
+        return True
+
     def _decide_mode(self) -> str:
         """Determine the target mode from current price signals and daily hours."""
+        # Freeze protection overrides everything — automation switch, price, algae skip
+        if self._freeze_risk():
+            return MODE_LOW
+
         if not self.automation_enabled:
             return self.current_mode
+
+        # Temperature override — algae don't grow in cold water, skip circulation
+        if self._too_cold_to_circulate():
+            return MODE_OFF
 
         is_peak = self._state_is_on(CONF_BINARY_PEAK_PRICE)
         is_best = self._state_is_on(CONF_BINARY_BEST_PRICE)
@@ -318,6 +381,10 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             "is_best_price": self._state_is_on(CONF_BINARY_BEST_PRICE),
             "is_peak_price": self._state_is_on(CONF_BINARY_PEAK_PRICE),
             "must_run": hours_needed > 0 and hours_needed >= hours_left,
+            "too_cold": self._too_cold_to_circulate(),
+            "freeze_risk": self._freeze_risk(),
+            "outdoor_temp": self._state_float(CONF_SENSOR_OUTDOOR_TEMP),
+            "pool_temp": self._state_float(CONF_SENSOR_POOL_TEMP),
         }
 
     async def _async_update_data(self) -> dict:

@@ -31,6 +31,8 @@ async def async_setup_entry(
             PoolCirculationHoursRemainingSensor(coordinator, entry),
             PoolCirculationPriceSensor(coordinator, entry),
             PoolCirculationPriceLevelSensor(coordinator, entry),
+            PoolOutdoorTempSensor(coordinator, entry),
+            PoolPoolTempSensor(coordinator, entry),
         ]
     )
 
@@ -66,6 +68,10 @@ class PoolCirculationModeSensor(_SensorBase):
             "is_best_price": d.get("is_best_price"),
             "is_peak_price": d.get("is_peak_price"),
             "must_run": d.get("must_run"),
+            "too_cold": d.get("too_cold"),
+            "freeze_risk": d.get("freeze_risk"),
+            "outdoor_temp": d.get("outdoor_temp"),
+            "pool_temp": d.get("pool_temp"),
             "price": d.get("price"),
             "price_level": d.get("price_level"),
         }
@@ -124,3 +130,33 @@ class PoolCirculationPriceLevelSensor(_SensorBase):
     @property
     def native_value(self):
         return self._data.get("price_level")
+
+
+class PoolOutdoorTempSensor(_SensorBase):
+    """Outdoor temperature passthrough — hidden by default if no sensor configured."""
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry, "outdoor_temp", "Pool Outdoor Temperature")
+        self._attr_native_unit_of_measurement = "°C"
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_icon = "mdi:thermometer"
+        self._attr_entity_registry_enabled_default = False
+
+    @property
+    def native_value(self):
+        return self._data.get("outdoor_temp")
+
+
+class PoolPoolTempSensor(_SensorBase):
+    """Pool water temperature passthrough — hidden by default if no sensor configured."""
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry, "pool_temp", "Pool Water Temperature")
+        self._attr_native_unit_of_measurement = "°C"
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_icon = "mdi:pool-thermometer"
+        self._attr_entity_registry_enabled_default = False
+
+    @property
+    def native_value(self):
+        return self._data.get("pool_temp")

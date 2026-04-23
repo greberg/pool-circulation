@@ -15,12 +15,18 @@ CONF_SENSOR_PRICE_LEVEL = "sensor_price_level"
 CONF_BINARY_BEST_PRICE = "binary_best_price"
 CONF_BINARY_PEAK_PRICE = "binary_peak_price"
 CONF_DAILY_HOURS = "daily_hours"
+CONF_SENSOR_OUTDOOR_TEMP = "sensor_outdoor_temp"
+CONF_SENSOR_POOL_TEMP = "sensor_pool_temp"
+CONF_TEMP_ALGAE_THRESHOLD = "temp_algae_threshold"
+CONF_TEMP_FREEZE_THRESHOLD = "temp_freeze_threshold"
 
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
 DEFAULT_NAME = "Pool Circulation"
 DEFAULT_DAILY_HOURS = 8
+DEFAULT_TEMP_ALGAE_THRESHOLD = 8.0   # °C — algae don't grow below this
+DEFAULT_TEMP_FREEZE_THRESHOLD = 2.0  # °C — circulate to prevent freezing
 
 # Default entity IDs (Trulsibrunn Nordpool integration)
 DEFAULT_SENSOR_PRICE = "sensor.trulsibrunn_timpris_aktuell"
