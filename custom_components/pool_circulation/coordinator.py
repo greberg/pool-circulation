@@ -336,6 +336,40 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
     # ------------------------------------------------------------------
     # State helpers
     # ------------------------------------------------------------------
+    def _active_rpm_level(self) -> str:
+        """Return which RPM switch is physically on (low/medium/high/off).
+        Reads the actual switch states rather than coordinator mode so the
+        sensor stays accurate if something changes outside the coordinator."""
+        for mode, conf_key in (
+            (MODE_HIGH, CONF_SWITCH_RPM_HIGH),
+            (MODE_MEDIUM, CONF_SWITCH_RPM_MEDIUM),
+            (MODE_LOW, CONF_SWITCH_RPM_LOW),
+        ):
+            entity_id = self.cfg.get(conf_key)
+            if entity_id:
+                state = self.hass.states.get(entity_id)
+                if state and state.state == "on":
+                    return mode
+        return MODE_OFF
+
+    def _hp_state(self) -> str | None:
+        """Current HVAC mode of the heat pump climate entity."""
+        hp = self.cfg.get(CONF_CLIMATE_HEAT_PUMP)
+        if not hp:
+            return None
+        state = self.hass.states.get(hp)
+        return state.state if state else None
+
+    def _hp_attr(self, attr: str):
+        """Read an attribute from the heat pump climate entity."""
+        hp = self.cfg.get(CONF_CLIMATE_HEAT_PUMP)
+        if not hp:
+            return None
+        state = self.hass.states.get(hp)
+        if not state:
+            return None
+        return state.attributes.get(attr)
+
     def _state_is_on(self, conf_key: str) -> bool:
         entity_id = self.cfg.get(conf_key)
         if not entity_id:
@@ -383,6 +417,11 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             "freeze_risk": self._freeze_risk(),
             "outdoor_temp": self._state_float(CONF_SENSOR_OUTDOOR_TEMP),
             "pool_temp": self._state_float(CONF_SENSOR_POOL_TEMP),
+            "active_rpm_level": self._active_rpm_level(),
+            "hp_mode": self._hp_state(),
+            "hp_current_temp": self._hp_attr("current_temperature"),
+            "hp_target_temp": self._hp_attr("temperature"),
+            "hp_fan_mode": self._hp_attr("fan_mode"),
         }
 
     async def _async_update_data(self) -> dict:

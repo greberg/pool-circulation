@@ -112,6 +112,9 @@ Go to **Settings → Devices & Services → Pool Circulation → Configure** to 
 | Entity | Description |
 |---|---|
 | `sensor.pool_circulation_mode` | Current mode: `off` / `low` / `medium` / `high` — attributes include `too_cold`, `freeze_risk`, temps, price |
+| `sensor.pool_circulation_rpm_level` | Active RPM level read from actual switch states: `off` / `low` / `medium` / `high` |
+| `sensor.pool_heat_pump_mode` | Current HVAC mode of the heat pump: `off` / `cool` / `heat` / `auto` |
+| `sensor.pool_heat_pump_current_temperature` | Temperature reading from the heat pump — attributes include target temp and fan mode |
 | `sensor.pool_circulation_hours_today` | Hours the pump has run today |
 | `sensor.pool_circulation_hours_remaining` | Hours still needed to hit today's target |
 | `sensor.pool_electricity_price` | Current electricity price (SEK/kWh) |

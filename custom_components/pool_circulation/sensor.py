@@ -27,12 +27,16 @@ async def async_setup_entry(
     async_add_entities(
         [
             PoolCirculationModeSensor(coordinator, entry),
+            PoolCirculationRpmSensor(coordinator, entry),
             PoolCirculationHoursTodaySensor(coordinator, entry),
             PoolCirculationHoursRemainingSensor(coordinator, entry),
             PoolCirculationPriceSensor(coordinator, entry),
             PoolCirculationPriceLevelSensor(coordinator, entry),
             PoolOutdoorTempSensor(coordinator, entry),
             PoolPoolTempSensor(coordinator, entry),
+            PoolHeatPumpModeSensor(coordinator, entry),
+            PoolHeatPumpCurrentTempSensor(coordinator, entry),
+            PoolHeatPumpTargetTempSensor(coordinator, entry),
         ]
     )
 
@@ -160,3 +164,50 @@ class PoolPoolTempSensor(_SensorBase):
     @property
     def native_value(self):
         return self._data.get("pool_temp")
+
+
+class PoolCirculationRpmSensor(_SensorBase):
+    """Active RPM level — reads the actual switch states, not just coordinator mode."""
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry, "rpm_level", "Pool Circulation RPM Level")
+        self._attr_icon = "mdi:speedometer"
+
+    @property
+    def native_value(self):
+        return self._data.get("active_rpm_level", "off")
+
+
+class PoolHeatPumpModeSensor(_SensorBase):
+    """Current HVAC mode of the heat pump (off / cool / heat / auto)."""
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry, "hp_mode", "Pool Heat Pump Mode")
+        self._attr_icon = "mdi:heat-pump"
+
+    @property
+    def native_value(self):
+        return self._data.get("hp_mode")
+
+
+class PoolHeatPumpCurrentTempSensor(_SensorBase):
+    """Current temperature reading from the heat pump."""
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry, "hp_current_temp", "Pool Heat Pump Current Temperature")
+        self._attr_native_unit_of_measurement = "°C"
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_icon = "mdi:thermometer"
+
+    @property
+    def native_value(self):
+        val = self._data.get("hp_current_temp")
+        return round(float(val), 1) if val is not None else None
+
+    @property
+    def extra_state_attributes(self):
+        return {
+            "target_temperature": self._data.get("hp_target_temp"),
+            "fan_mode": self._data.get("hp_fan_mode"),
+            "hvac_mode": self._data.get("hp_mode"),
+        }
