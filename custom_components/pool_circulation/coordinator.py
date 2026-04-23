@@ -199,33 +199,31 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         return False
 
     def _too_cold_to_circulate(self) -> bool:
-        """Return True if all configured temperature sensors are below the algae
-        growth threshold — no chemical or biological reason to run the pump.
+        """Return True if outdoor temp is below the algae growth threshold.
 
-        Logic: if ANY configured sensor reads AT OR ABOVE the threshold, algae
-        can grow and we should circulate. Only block if every sensor we have
-        confirms it's cold enough to skip.
+        Outdoor temperature is the deciding factor — algae need warm air to
+        grow, so if it's cold outside circulation isn't needed for biological
+        reasons even if the pool water is still warm.
+
+        If no outdoor sensor is configured the skip is never triggered (safe
+        default: always circulate when in doubt).
+        Pool temp sensor is informational only and does not affect this logic.
         """
         threshold = self.cfg.get(CONF_TEMP_ALGAE_THRESHOLD, DEFAULT_TEMP_ALGAE_THRESHOLD)
         outdoor = self._state_float(CONF_SENSOR_OUTDOOR_TEMP)
-        pool = self._state_float(CONF_SENSOR_POOL_TEMP)
 
-        if outdoor is None and pool is None:
-            return False  # no sensors configured — don't block
+        if outdoor is None:
+            return False  # no outdoor sensor — don't skip
 
-        if outdoor is not None and outdoor >= threshold:
-            return False
-        if pool is not None and pool >= threshold:
-            return False
+        if outdoor < threshold:
+            _LOGGER.debug(
+                "Algae skip active: outdoor temp %.1f°C < %.1f°C threshold",
+                outdoor,
+                threshold,
+            )
+            return True
 
-        # All configured sensors below threshold
-        temps = [t for t in (outdoor, pool) if t is not None]
-        _LOGGER.debug(
-            "Cold override active: temps %s all below %.1f°C threshold",
-            temps,
-            threshold,
-        )
-        return True
+        return False
 
     def _decide_mode(self) -> str:
         """Determine the target mode from current price signals and daily hours."""
