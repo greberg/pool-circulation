@@ -36,7 +36,6 @@ async def async_setup_entry(
             PoolPoolTempSensor(coordinator, entry),
             PoolHeatPumpModeSensor(coordinator, entry),
             PoolHeatPumpCurrentTempSensor(coordinator, entry),
-            PoolHeatPumpTargetTempSensor(coordinator, entry),
         ]
     )
 
