@@ -1,0 +1,39 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Pool Circulation Setup",
+        "description": "Configure circulation pump and heat pump with price-based automation.",
+        "data": {
+          "name": "Name",
+          "climate_heat_pump": "Heat pump climate entity",
+          "switch_circulation": "Circulation pump switch",
+          "switch_rpm_low": "Low RPM switch (optional)",
+          "switch_rpm_medium": "Medium RPM switch (optional)",
+          "switch_rpm_high": "High RPM switch (optional)",
+          "sensor_price": "Current electricity price sensor",
+          "sensor_price_level": "Price level sensor",
+          "binary_best_price": "Best price period binary sensor",
+          "binary_peak_price": "Peak price period binary sensor",
+          "daily_hours": "Target circulation hours per day"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Pool Circulation is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Pool Circulation Options",
+        "data": {
+          "daily_hours": "Target circulation hours per day",
+          "binary_best_price": "Best price period binary sensor",
+          "binary_peak_price": "Peak price period binary sensor",
+          "sensor_price": "Current electricity price sensor"
+        }
+      }
+    }
+  }
+}

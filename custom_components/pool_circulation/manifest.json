@@ -1,0 +1,12 @@
+{
+  "domain": "pool_circulation",
+  "name": "Pool Circulation",
+  "version": "1.0.0",
+  "config_flow": true,
+  "documentation": "https://github.com/greberg/pool-circulation",
+  "issue_tracker": "https://github.com/greberg/pool-circulation/issues",
+  "dependencies": [],
+  "codeowners": ["@greberg"],
+  "requirements": [],
+  "iot_class": "local_push"
+}

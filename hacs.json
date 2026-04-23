@@ -1,0 +1,7 @@
+{
+  "name": "Pool Circulation",
+  "description": "Price-based circulation pump and heat pump scheduler for pool automation.",
+  "render_readme": true,
+  "homeassistant": "2023.1.0",
+  "icon": "icon.png"
+}
