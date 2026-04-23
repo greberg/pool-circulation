@@ -167,15 +167,18 @@ class PoolPoolTempSensor(_SensorBase):
 
 
 class PoolCirculationRpmSensor(_SensorBase):
-    """Active RPM level — reads the actual switch states, not just coordinator mode."""
+    """Current circulation pump RPM — reads actual switch states."""
 
     def __init__(self, coordinator, entry):
-        super().__init__(coordinator, entry, "rpm_level", "Pool Circulation RPM Level")
+        super().__init__(coordinator, entry, "rpm", "Pool Circulation RPM")
+        self._attr_native_unit_of_measurement = "RPM"
+        self._attr_state_class = SensorStateClass.MEASUREMENT
         self._attr_icon = "mdi:speedometer"
 
     @property
     def native_value(self):
-        return self._data.get("active_rpm_level", "off")
+        # None when pump is off — HA will show "unavailable" which is correct
+        return self._data.get("active_rpm")
 
 
 class PoolHeatPumpModeSensor(_SensorBase):

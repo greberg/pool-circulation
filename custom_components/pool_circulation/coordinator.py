@@ -22,6 +22,9 @@ from .const import (
     CONF_SENSOR_PRICE,
     CONF_SENSOR_PRICE_LEVEL,
     CONF_SWITCH_CIRCULATION,
+    CONF_RPM_HIGH,
+    CONF_RPM_LOW,
+    CONF_RPM_MEDIUM,
     CONF_SWITCH_RPM_HIGH,
     CONF_SWITCH_RPM_LOW,
     CONF_SWITCH_RPM_MEDIUM,
@@ -29,6 +32,9 @@ from .const import (
     CONF_TEMP_FREEZE_THRESHOLD,
     COORDINATOR_UPDATE_INTERVAL,
     DEFAULT_DAILY_HOURS,
+    DEFAULT_RPM_HIGH,
+    DEFAULT_RPM_LOW,
+    DEFAULT_RPM_MEDIUM,
     DEFAULT_TEMP_ALGAE_THRESHOLD,
     DEFAULT_TEMP_FREEZE_THRESHOLD,
     DOMAIN,
@@ -336,21 +342,20 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
     # ------------------------------------------------------------------
     # State helpers
     # ------------------------------------------------------------------
-    def _active_rpm_level(self) -> str:
-        """Return which RPM switch is physically on (low/medium/high/off).
-        Reads the actual switch states rather than coordinator mode so the
-        sensor stays accurate if something changes outside the coordinator."""
-        for mode, conf_key in (
-            (MODE_HIGH, CONF_SWITCH_RPM_HIGH),
-            (MODE_MEDIUM, CONF_SWITCH_RPM_MEDIUM),
-            (MODE_LOW, CONF_SWITCH_RPM_LOW),
+    def _active_rpm(self) -> int | None:
+        """Return the configured RPM value for whichever RPM switch is on.
+        Returns None when no switch is active (pump off)."""
+        for switch_key, rpm_key, default in (
+            (CONF_SWITCH_RPM_HIGH,   CONF_RPM_HIGH,   DEFAULT_RPM_HIGH),
+            (CONF_SWITCH_RPM_MEDIUM, CONF_RPM_MEDIUM, DEFAULT_RPM_MEDIUM),
+            (CONF_SWITCH_RPM_LOW,    CONF_RPM_LOW,    DEFAULT_RPM_LOW),
         ):
-            entity_id = self.cfg.get(conf_key)
+            entity_id = self.cfg.get(switch_key)
             if entity_id:
                 state = self.hass.states.get(entity_id)
                 if state and state.state == "on":
-                    return mode
-        return MODE_OFF
+                    return int(self.cfg.get(rpm_key, default))
+        return None
 
     def _hp_state(self) -> str | None:
         """Current HVAC mode of the heat pump climate entity."""
@@ -417,7 +422,7 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             "freeze_risk": self._freeze_risk(),
             "outdoor_temp": self._state_float(CONF_SENSOR_OUTDOOR_TEMP),
             "pool_temp": self._state_float(CONF_SENSOR_POOL_TEMP),
-            "active_rpm_level": self._active_rpm_level(),
+            "active_rpm": self._active_rpm(),
             "hp_mode": self._hp_state(),
             "hp_current_temp": self._hp_attr("current_temperature"),
             "hp_target_temp": self._hp_attr("temperature"),

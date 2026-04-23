@@ -82,8 +82,11 @@ Any Nordpool or Tibber-based price integration with equivalent entities works �
 | Heat pump climate entity | ✅ | e.g. `climate.pool_heat_pump` |
 | Circulation pump switch | ✅ | Main on/off switch |
 | Low RPM switch | — | Optional |
+| Low RPM value | — | RPM number displayed when low switch is on (default 1000) |
 | Medium RPM switch | — | Optional |
+| Medium RPM value | — | RPM number displayed when medium switch is on (default 2000) |
 | High RPM switch | — | Optional |
+| High RPM value | — | RPM number displayed when high switch is on (default 3000) |
 | Current price sensor | — | Default: `sensor.trulsibrunn_timpris_aktuell` |
 | Price level sensor | — | Default: `sensor.trulsibrunn_aktuell_timprisniva` |
 | Best price binary sensor | — | Default: `binary_sensor.trulsibrunn_basta_prisperiod` |
@@ -112,7 +115,7 @@ Go to **Settings → Devices & Services → Pool Circulation → Configure** to 
 | Entity | Description |
 |---|---|
 | `sensor.pool_circulation_mode` | Current mode: `off` / `low` / `medium` / `high` — attributes include `too_cold`, `freeze_risk`, temps, price |
-| `sensor.pool_circulation_rpm_level` | Active RPM level read from actual switch states: `off` / `low` / `medium` / `high` |
+| `sensor.pool_circulation_rpm` | Current RPM (numeric) read from actual switch states — shows configured RPM value for the active switch, `unavailable` when pump is off |
 | `sensor.pool_heat_pump_mode` | Current HVAC mode of the heat pump: `off` / `cool` / `heat` / `auto` |
 | `sensor.pool_heat_pump_current_temperature` | Temperature reading from the heat pump — attributes include target temp and fan mode |
 | `sensor.pool_circulation_hours_today` | Hours the pump has run today |

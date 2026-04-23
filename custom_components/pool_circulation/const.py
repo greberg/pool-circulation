@@ -10,6 +10,9 @@ CONF_SWITCH_CIRCULATION = "switch_circulation"
 CONF_SWITCH_RPM_LOW = "switch_rpm_low"
 CONF_SWITCH_RPM_MEDIUM = "switch_rpm_medium"
 CONF_SWITCH_RPM_HIGH = "switch_rpm_high"
+CONF_RPM_LOW = "rpm_low"
+CONF_RPM_MEDIUM = "rpm_medium"
+CONF_RPM_HIGH = "rpm_high"
 CONF_SENSOR_PRICE = "sensor_price"
 CONF_SENSOR_PRICE_LEVEL = "sensor_price_level"
 CONF_BINARY_BEST_PRICE = "binary_best_price"
@@ -27,6 +30,9 @@ DEFAULT_NAME = "Pool Circulation"
 DEFAULT_DAILY_HOURS = 8
 DEFAULT_TEMP_ALGAE_THRESHOLD = 8.0   # °C — algae don't grow below this
 DEFAULT_TEMP_FREEZE_THRESHOLD = 2.0  # °C — circulate to prevent freezing
+DEFAULT_RPM_LOW = 1000
+DEFAULT_RPM_MEDIUM = 2000
+DEFAULT_RPM_HIGH = 3000
 
 # Default entity IDs (Trulsibrunn Nordpool integration)
 DEFAULT_SENSOR_PRICE = "sensor.trulsibrunn_timpris_aktuell"
