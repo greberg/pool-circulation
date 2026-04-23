@@ -12,6 +12,8 @@ A Home Assistant custom component that automatically controls your pool circulat
 |---|---|
 | **Price-based scheduling** | Runs at high RPM + heat pump during best-price windows; stops during peak prices |
 | **Daily hours guarantee** | Must-run override kicks in when the daily target can't be met any other way |
+| **Algae skip** | Skips circulation when all temperature sensors are below the algae growth threshold |
+| **Freeze protection** | Forces low-speed circulation when outdoor temp drops to freeze threshold — overrides everything |
 | **Heat pump control** | Turns heat pump on/off via any `climate` entity |
 | **3-speed RPM control** | Maps low / medium / high RPM to individual switches |
 | **Persisted state** | Daily hours counter survives HA restarts; resets at midnight |
@@ -27,12 +29,17 @@ Every hour at HH:00, the coordinator evaluates price signals and sets one of fou
 
 | Mode | Condition | Circulation | Heat pump |
 |---|---|---|---|
+| `low` | **Freeze protection** — outdoor temp ≤ freeze threshold | Low RPM ON | OFF |
 | `high` | Best-price period active | High RPM switch ON | ON |
 | `medium` | Normal price, hours still needed | Medium RPM switch ON | OFF |
-| `off` | Peak-price period, daily target already met | All switches OFF | OFF |
-| `low` | Reserved / manual override | Low RPM switch ON | OFF |
+| `off` | Peak price, daily target met, or **algae skip** (all temps below algae threshold) | All switches OFF | OFF |
 
-**Must-run override:** if the remaining hours needed ≥ hours left in the day, the coordinator forces `medium` regardless of the current price. This guarantees the pool always gets its minimum daily circulation.
+**Priority order (highest → lowest):**
+1. **Freeze protection** — outdoor temp ≤ freeze threshold (default 2°C) → forces `low`, ignores everything else
+2. **Automation switch off** → holds current mode
+3. **Algae skip** — all configured temp sensors below algae threshold (default 8°C) → `off`
+4. **Price logic** — peak → `off`, best → `high`, normal → `medium` if hours still needed
+5. **Must-run override** — hours needed ≥ hours left today → forces `medium` regardless of price
 
 ---
 
@@ -40,6 +47,8 @@ Every hour at HH:00, the coordinator evaluates price signals and sets one of fou
 
 - Home Assistant 2023.1 or newer
 - A heat pump integrated as a `climate` entity (e.g. `aqua_temp`)
+- Outdoor temperature sensor (recommended for algae skip and freeze protection)
+- Pool water temperature sensor (optional, strengthens algae skip)
 - Circulation pump wired as:
   - One `switch` entity for on/off
   - Up to three `switch` entities for RPM levels (low / medium / high)
@@ -80,6 +89,10 @@ Any Nordpool or Tibber-based price integration with equivalent entities works �
 | Best price binary sensor | — | Default: `binary_sensor.trulsibrunn_basta_prisperiod` |
 | Peak price binary sensor | — | Default: `binary_sensor.trulsibrunn_topprisperiod` |
 | Daily circulation hours | ✅ | Target hours per day (0–24, default 8) |
+| Outdoor temperature sensor | — | Used for algae skip and freeze protection |
+| Pool temperature sensor | — | Used for algae skip |
+| Algae growth threshold | — | Default 8°C — skip circulation below this |
+| Freeze protection threshold | — | Default 2°C — force low-speed circulation below this |
 
 ### Options (editable after setup)
 
@@ -87,6 +100,9 @@ Go to **Settings → Devices & Services → Pool Circulation → Configure** to 
 - Daily circulation hours target
 - Price signal entity IDs
 - Best / peak price binary sensors
+- Outdoor and pool temperature sensors
+- Algae growth threshold (°C)
+- Freeze protection threshold (°C)
 
 ---
 
@@ -95,11 +111,13 @@ Go to **Settings → Devices & Services → Pool Circulation → Configure** to 
 ### Sensors
 | Entity | Description |
 |---|---|
-| `sensor.pool_circulation_mode` | Current mode: `off` / `low` / `medium` / `high` |
+| `sensor.pool_circulation_mode` | Current mode: `off` / `low` / `medium` / `high` — attributes include `too_cold`, `freeze_risk`, temps, price |
 | `sensor.pool_circulation_hours_today` | Hours the pump has run today |
 | `sensor.pool_circulation_hours_remaining` | Hours still needed to hit today's target |
 | `sensor.pool_electricity_price` | Current electricity price (SEK/kWh) |
 | `sensor.pool_electricity_price_level` | Price level label from your Nordpool integration |
+| `sensor.pool_outdoor_temperature` | Outdoor temperature passthrough (hidden by default) |
+| `sensor.pool_water_temperature` | Pool water temperature passthrough (hidden by default) |
 
 ### Switch
 | Entity | Description |
