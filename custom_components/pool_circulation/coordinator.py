@@ -6,7 +6,8 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
@@ -95,8 +96,17 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             )
         )
 
-        # Run an initial evaluation so the mode is set on startup
-        await self.async_evaluate_mode()
+        # Defer the initial mode evaluation until HA is fully started so that
+        # device integrations (e.g. heat pump) have finished their own setup
+        # and won't cancel our service calls.
+        if self.hass.is_running:
+            # Component was reloaded while HA was already running — safe to act now
+            self.hass.async_create_task(self.async_evaluate_mode())
+        else:
+            self.hass.bus.async_listen_once(
+                EVENT_HOMEASSISTANT_STARTED,
+                self._on_ha_started,
+            )
 
         _LOGGER.info("Pool Circulation: hourly price-based scheduler active")
 
@@ -131,6 +141,11 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
     # ------------------------------------------------------------------
     # Scheduled callbacks
     # ------------------------------------------------------------------
+    @callback
+    def _on_ha_started(self, event: Event) -> None:
+        """HA has fully started — now safe to call device services."""
+        self.hass.async_create_task(self.async_evaluate_mode())
+
     @callback
     def _hourly_tick(self, now: datetime) -> None:
         """Called at HH:00:05 — account for the previous hour then re-evaluate."""
