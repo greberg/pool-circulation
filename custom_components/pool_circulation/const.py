@@ -22,6 +22,9 @@ CONF_SENSOR_OUTDOOR_TEMP = "sensor_outdoor_temp"
 CONF_SENSOR_POOL_TEMP = "sensor_pool_temp"
 CONF_TEMP_ALGAE_THRESHOLD = "temp_algae_threshold"
 CONF_TEMP_FREEZE_THRESHOLD = "temp_freeze_threshold"
+CONF_SWITCH_UV_LAMP = "switch_uv_lamp"
+CONF_COVER_POOL = "cover_pool"
+CONF_EXTRA_FILTER_DURATION = "extra_filter_duration"
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -33,6 +36,7 @@ DEFAULT_TEMP_FREEZE_THRESHOLD = 2.0  # °C — circulate to prevent freezing
 DEFAULT_RPM_LOW = 1000
 DEFAULT_RPM_MEDIUM = 2000
 DEFAULT_RPM_HIGH = 3000
+DEFAULT_EXTRA_FILTER_DURATION = 60   # minutes
 
 # Default entity IDs (Trulsibrunn Nordpool integration)
 DEFAULT_SENSOR_PRICE = "sensor.trulsibrunn_timpris_aktuell"
@@ -54,6 +58,8 @@ ALL_MODES = [MODE_OFF, MODE_LOW, MODE_MEDIUM, MODE_HIGH]
 # HA events
 # ---------------------------------------------------------------------------
 EVENT_MODE_CHANGED = "pool_circulation_mode_changed"
+EVENT_UV_CHANGED = "pool_circulation_uv_changed"
+EVENT_EXTRA_FILTER_CHANGED = "pool_circulation_extra_filter_changed"
 
 # ---------------------------------------------------------------------------
 # Persistent storage

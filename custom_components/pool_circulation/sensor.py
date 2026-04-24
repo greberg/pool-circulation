@@ -73,6 +73,8 @@ class PoolCirculationModeSensor(_SensorBase):
             "must_run": d.get("must_run"),
             "too_cold": d.get("too_cold"),
             "freeze_risk": d.get("freeze_risk"),
+            "extra_filter_active": d.get("extra_filter_active"),
+            "uv_on": d.get("uv_on"),
             "outdoor_temp": d.get("outdoor_temp"),
             "pool_temp": d.get("pool_temp"),
             "price": d.get("price"),
@@ -176,8 +178,8 @@ class PoolCirculationRpmSensor(_SensorBase):
 
     @property
     def native_value(self):
-        # None when pump is off — HA will show "unavailable" which is correct
-        return self._data.get("active_rpm")
+        # 0 when pump is off
+        return self._data.get("active_rpm", 0)
 
 
 class PoolHeatPumpModeSensor(_SensorBase):

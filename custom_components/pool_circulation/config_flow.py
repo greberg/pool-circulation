@@ -10,7 +10,9 @@ from .const import (
     CONF_BINARY_BEST_PRICE,
     CONF_BINARY_PEAK_PRICE,
     CONF_CLIMATE_HEAT_PUMP,
+    CONF_COVER_POOL,
     CONF_DAILY_HOURS,
+    CONF_EXTRA_FILTER_DURATION,
     CONF_RPM_HIGH,
     CONF_RPM_LOW,
     CONF_RPM_MEDIUM,
@@ -22,11 +24,13 @@ from .const import (
     CONF_SWITCH_RPM_HIGH,
     CONF_SWITCH_RPM_LOW,
     CONF_SWITCH_RPM_MEDIUM,
+    CONF_SWITCH_UV_LAMP,
     CONF_TEMP_ALGAE_THRESHOLD,
     CONF_TEMP_FREEZE_THRESHOLD,
     DEFAULT_BINARY_BEST_PRICE,
     DEFAULT_BINARY_PEAK_PRICE,
     DEFAULT_DAILY_HOURS,
+    DEFAULT_EXTRA_FILTER_DURATION,
     DEFAULT_NAME,
     DEFAULT_RPM_HIGH,
     DEFAULT_RPM_LOW,
@@ -68,6 +72,13 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         vol.Optional(
             CONF_TEMP_FREEZE_THRESHOLD, default=DEFAULT_TEMP_FREEZE_THRESHOLD
         ): vol.Coerce(float),
+        # UV lamp and pool cover
+        vol.Optional(CONF_SWITCH_UV_LAMP, default=""): str,
+        vol.Optional(CONF_COVER_POOL, default=""): str,
+        # Extra filter duration (minutes)
+        vol.Optional(
+            CONF_EXTRA_FILTER_DURATION, default=DEFAULT_EXTRA_FILTER_DURATION
+        ): vol.All(vol.Coerce(int), vol.Range(min=5, max=480)),
     }
 )
 
@@ -143,6 +154,18 @@ class PoolCirculationOptionsFlow(config_entries.OptionsFlow):
                     CONF_TEMP_FREEZE_THRESHOLD,
                     default=cfg.get(CONF_TEMP_FREEZE_THRESHOLD, DEFAULT_TEMP_FREEZE_THRESHOLD),
                 ): vol.Coerce(float),
+                vol.Optional(
+                    CONF_SWITCH_UV_LAMP,
+                    default=cfg.get(CONF_SWITCH_UV_LAMP, ""),
+                ): str,
+                vol.Optional(
+                    CONF_COVER_POOL,
+                    default=cfg.get(CONF_COVER_POOL, ""),
+                ): str,
+                vol.Optional(
+                    CONF_EXTRA_FILTER_DURATION,
+                    default=cfg.get(CONF_EXTRA_FILTER_DURATION, DEFAULT_EXTRA_FILTER_DURATION),
+                ): vol.All(vol.Coerce(int), vol.Range(min=5, max=480)),
             }
         )
 
