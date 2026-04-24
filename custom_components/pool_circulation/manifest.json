@@ -1,7 +1,7 @@
 {
   "domain": "pool_circulation",
   "name": "Pool Circulation",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "config_flow": true,
   "documentation": "https://github.com/greberg/pool-circulation",
   "issue_tracker": "https://github.com/greberg/pool-circulation/issues",

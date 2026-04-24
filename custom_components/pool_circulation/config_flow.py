@@ -16,6 +16,7 @@ from .const import (
     CONF_RPM_HIGH,
     CONF_RPM_LOW,
     CONF_RPM_MEDIUM,
+    CONF_SENSOR_ACTUAL_RPM,
     CONF_SENSOR_OUTDOOR_TEMP,
     CONF_SENSOR_POOL_TEMP,
     CONF_SENSOR_PRICE,
@@ -72,6 +73,8 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         vol.Optional(
             CONF_TEMP_FREEZE_THRESHOLD, default=DEFAULT_TEMP_FREEZE_THRESHOLD
         ): vol.Coerce(float),
+        # Actual RPM sensor (optional — overrides switch-derived RPM)
+        vol.Optional(CONF_SENSOR_ACTUAL_RPM, default=""): str,
         # UV lamp and pool cover
         vol.Optional(CONF_SWITCH_UV_LAMP, default=""): str,
         vol.Optional(CONF_COVER_POOL, default=""): str,
@@ -154,6 +157,10 @@ class PoolCirculationOptionsFlow(config_entries.OptionsFlow):
                     CONF_TEMP_FREEZE_THRESHOLD,
                     default=cfg.get(CONF_TEMP_FREEZE_THRESHOLD, DEFAULT_TEMP_FREEZE_THRESHOLD),
                 ): vol.Coerce(float),
+                vol.Optional(
+                    CONF_SENSOR_ACTUAL_RPM,
+                    default=cfg.get(CONF_SENSOR_ACTUAL_RPM, ""),
+                ): str,
                 vol.Optional(
                     CONF_SWITCH_UV_LAMP,
                     default=cfg.get(CONF_SWITCH_UV_LAMP, ""),

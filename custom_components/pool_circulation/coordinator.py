@@ -20,6 +20,7 @@ from .const import (
     CONF_COVER_POOL,
     CONF_DAILY_HOURS,
     CONF_EXTRA_FILTER_DURATION,
+    CONF_SENSOR_ACTUAL_RPM,
     CONF_SENSOR_OUTDOOR_TEMP,
     CONF_SENSOR_POOL_TEMP,
     CONF_SENSOR_PRICE,
@@ -450,8 +451,24 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
     # State helpers
     # ------------------------------------------------------------------
     def _active_rpm(self) -> int:
-        """Return the configured RPM value for whichever RPM switch is on.
-        Returns 0 when pump is off."""
+        """Return current RPM.
+
+        If an actual RPM sensor is configured, read it directly (e.g. an ESPHome
+        sensor that reads the inverter frequency).  Falls back to the switch-derived
+        value — returns the configured RPM number for whichever RPM switch is on,
+        or 0 when the pump is off.
+        """
+        # Prefer actual sensor reading
+        actual_rpm_entity = self.cfg.get(CONF_SENSOR_ACTUAL_RPM)
+        if actual_rpm_entity:
+            state = self.hass.states.get(actual_rpm_entity)
+            if state and state.state not in ("unavailable", "unknown", ""):
+                try:
+                    return int(float(state.state))
+                except ValueError:
+                    pass
+
+        # Fall back to switch-derived RPM
         for switch_key, rpm_key, default in (
             (CONF_SWITCH_RPM_HIGH,   CONF_RPM_HIGH,   DEFAULT_RPM_HIGH),
             (CONF_SWITCH_RPM_MEDIUM, CONF_RPM_MEDIUM, DEFAULT_RPM_MEDIUM),

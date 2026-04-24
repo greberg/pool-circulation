@@ -101,6 +101,7 @@ Any Nordpool or Tibber-based price integration with equivalent entities works �
 | Pool temperature sensor | — | Used for algae skip |
 | Algae growth threshold | — | Default 8°C — skip circulation below this pool temp |
 | Freeze protection threshold | — | Default 2°C — force low-speed circulation below this outdoor temp |
+| Actual RPM sensor | — | Optional sensor reporting real inverter RPM (e.g. ESPHome). When set, overrides the switch-derived RPM value |
 | UV lamp switch | — | Controlled automatically based on circulation state |
 | Pool cover entity | — | UV lamp stays off when cover is open |
 | Extra filter duration | — | Minutes to run after extra filter is activated (default 60, range 5–480) |
@@ -113,6 +114,7 @@ Go to **Settings → Devices & Services → Pool Circulation → Configure** to 
 - Outdoor and pool temperature sensors
 - Algae growth threshold (°C)
 - Freeze protection threshold (°C)
+- Actual RPM sensor entity
 - UV lamp switch and pool cover entity
 - Extra filter duration (minutes)
 
@@ -124,7 +126,7 @@ Go to **Settings → Devices & Services → Pool Circulation → Configure** to 
 | Entity | Description |
 |---|---|
 | `sensor.pool_circulation_mode` | Current mode: `off` / `low` / `medium` / `high` — attributes include `too_cold`, `freeze_risk`, `extra_filter_active`, `uv_on`, temps, price |
-| `sensor.pool_circulation_rpm` | Current RPM (numeric) — shows configured RPM value for the active switch, `0` when pump is off |
+| `sensor.pool_circulation_rpm` | Current RPM (numeric) — reads actual RPM sensor if configured, otherwise derived from active switch; `0` when pump is off |
 | `sensor.pool_heat_pump_mode` | Current HVAC mode of the heat pump: `off` / `cool` / `heat` / `auto` |
 | `sensor.pool_heat_pump_current_temperature` | Temperature reading from the heat pump — attributes include target temp and fan mode |
 | `sensor.pool_circulation_hours_today` | Hours the pump has run today |

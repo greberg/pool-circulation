@@ -25,6 +25,7 @@ CONF_TEMP_FREEZE_THRESHOLD = "temp_freeze_threshold"
 CONF_SWITCH_UV_LAMP = "switch_uv_lamp"
 CONF_COVER_POOL = "cover_pool"
 CONF_EXTRA_FILTER_DURATION = "extra_filter_duration"
+CONF_SENSOR_ACTUAL_RPM = "sensor_actual_rpm"
 
 # ---------------------------------------------------------------------------
 # Defaults
