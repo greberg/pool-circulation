@@ -9,7 +9,10 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import Event, HomeAssistant, callback
-from homeassistant.helpers.event import async_track_time_change
+from homeassistant.helpers.event import (
+    async_track_state_change_event,
+    async_track_time_change,
+)
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
@@ -81,6 +84,10 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         self.extra_filter_active: bool = False
         self._extra_filter_task: asyncio.Task | None = None
 
+        # Temperature sensor state-change subscriptions (managed separately
+        # so they can be refreshed when options change entity IDs)
+        self._temp_watcher_unsubs: list[Any] = []
+
     # ------------------------------------------------------------------
     # Config helpers
     # ------------------------------------------------------------------
@@ -124,6 +131,11 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             )
         )
 
+        # Re-evaluate immediately when temperature sensors change state.
+        # This ensures algae skip and freeze protection react in real time
+        # instead of waiting up to 59 minutes for the next hourly tick.
+        self._register_temp_watchers()
+
         # Defer the initial mode evaluation until HA is fully started so that
         # device integrations (e.g. heat pump) have finished their own setup.
         if self.hass.is_running:
@@ -143,6 +155,9 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         for unsub in self._subscriptions:
             unsub()
         self._subscriptions.clear()
+        for unsub in self._temp_watcher_unsubs:
+            unsub()
+        self._temp_watcher_unsubs.clear()
 
     # ------------------------------------------------------------------
     # Persistence
@@ -196,6 +211,79 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         self.hours_run_today = 0
         self.hass.async_create_task(self._save_state())
         self.async_set_updated_data(self._build_data())
+
+    # ------------------------------------------------------------------
+    # Temperature watchers
+    # ------------------------------------------------------------------
+    def _register_temp_watchers(self) -> None:
+        """Subscribe to pool and outdoor temp sensor state changes.
+
+        Called once during setup and again whenever options change (the sensor
+        entity IDs might have been edited). Old subscriptions are replaced.
+        """
+        # Remove any previously registered temp watchers before re-registering
+        for unsub in list(self._temp_watcher_unsubs):
+            unsub()
+        self._temp_watcher_unsubs.clear()
+
+        for conf_key in (CONF_SENSOR_POOL_TEMP, CONF_SENSOR_OUTDOOR_TEMP):
+            entity_id = self.cfg.get(conf_key)
+            if entity_id:
+                unsub = async_track_state_change_event(
+                    self.hass,
+                    [entity_id],
+                    self._on_temp_changed,
+                )
+                self._temp_watcher_unsubs.append(unsub)
+                _LOGGER.debug("Watching temperature sensor: %s", entity_id)
+
+    @callback
+    def _on_temp_changed(self, event) -> None:
+        """Re-evaluate mode immediately when a temperature sensor changes.
+
+        Handles both algae skip (pool temp crosses algae threshold) and
+        freeze protection (outdoor temp crosses freeze threshold) without
+        waiting for the next hourly tick.
+        """
+        new_state = event.data.get("new_state")
+        old_state = event.data.get("old_state")
+        if new_state is None:
+            return
+
+        entity_id = new_state.entity_id
+
+        # Only act when the value actually changes meaningfully — ignore
+        # unavailable / unknown transitions that don't cross a threshold.
+        try:
+            new_val = float(new_state.state)
+        except (ValueError, TypeError):
+            return
+
+        try:
+            old_val = float(old_state.state) if old_state else None
+        except (ValueError, TypeError):
+            old_val = None
+
+        pool_sensor = self.cfg.get(CONF_SENSOR_POOL_TEMP)
+        outdoor_sensor = self.cfg.get(CONF_SENSOR_OUTDOOR_TEMP)
+
+        if entity_id == pool_sensor:
+            threshold = float(self.cfg.get(CONF_TEMP_ALGAE_THRESHOLD, DEFAULT_TEMP_ALGAE_THRESHOLD))
+            if old_val is None or (old_val >= threshold) != (new_val >= threshold):
+                _LOGGER.debug(
+                    "Pool temp crossed algae threshold (%.1f°C): %.1f → %.1f — re-evaluating mode",
+                    threshold, old_val if old_val is not None else float("nan"), new_val,
+                )
+                self.hass.async_create_task(self.async_evaluate_mode())
+
+        elif entity_id == outdoor_sensor:
+            threshold = float(self.cfg.get(CONF_TEMP_FREEZE_THRESHOLD, DEFAULT_TEMP_FREEZE_THRESHOLD))
+            if old_val is None or (old_val <= threshold) != (new_val <= threshold):
+                _LOGGER.debug(
+                    "Outdoor temp crossed freeze threshold (%.1f°C): %.1f → %.1f — re-evaluating mode",
+                    threshold, old_val if old_val is not None else float("nan"), new_val,
+                )
+                self.hass.async_create_task(self.async_evaluate_mode())
 
     # ------------------------------------------------------------------
     # Extra filter mode
