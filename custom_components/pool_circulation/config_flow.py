@@ -11,6 +11,7 @@ from .const import (
     CONF_BINARY_PEAK_PRICE,
     CONF_CLIMATE_HEAT_PUMP,
     CONF_COOLDOWN_MINUTES,
+    CONF_MIN_ON_MINUTES,
     CONF_COVER_POOL,
     CONF_DAILY_HOURS,
     CONF_EXTRA_FILTER_DURATION,
@@ -32,6 +33,7 @@ from .const import (
     DEFAULT_BINARY_BEST_PRICE,
     DEFAULT_BINARY_PEAK_PRICE,
     DEFAULT_COOLDOWN_MINUTES,
+    DEFAULT_MIN_ON_MINUTES,
     DEFAULT_DAILY_HOURS,
     DEFAULT_EXTRA_FILTER_DURATION,
     DEFAULT_NAME,
@@ -87,6 +89,10 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         # Cooldown between pump off → on (0 = disabled)
         vol.Optional(
             CONF_COOLDOWN_MINUTES, default=DEFAULT_COOLDOWN_MINUTES
+        ): vol.All(vol.Coerce(int), vol.Range(min=0, max=60)),
+        # Minimum on-time before pump can turn off (0 = disabled)
+        vol.Optional(
+            CONF_MIN_ON_MINUTES, default=DEFAULT_MIN_ON_MINUTES
         ): vol.All(vol.Coerce(int), vol.Range(min=0, max=60)),
     }
 )
@@ -182,6 +188,10 @@ class PoolCirculationOptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(
                     CONF_COOLDOWN_MINUTES,
                     default=cfg.get(CONF_COOLDOWN_MINUTES, DEFAULT_COOLDOWN_MINUTES),
+                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=60)),
+                vol.Optional(
+                    CONF_MIN_ON_MINUTES,
+                    default=cfg.get(CONF_MIN_ON_MINUTES, DEFAULT_MIN_ON_MINUTES),
                 ): vol.All(vol.Coerce(int), vol.Range(min=0, max=60)),
             }
         )

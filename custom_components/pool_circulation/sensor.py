@@ -75,6 +75,8 @@ class PoolCirculationModeSensor(_SensorBase):
             "freeze_risk": d.get("freeze_risk"),
             "in_cooldown": d.get("in_cooldown"),
             "cooldown_remaining": d.get("cooldown_remaining"),
+            "in_min_on": d.get("in_min_on"),
+            "min_on_remaining": d.get("min_on_remaining"),
             "extra_filter_active": d.get("extra_filter_active"),
             "uv_on": d.get("uv_on"),
             "outdoor_temp": d.get("outdoor_temp"),

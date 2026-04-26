@@ -11,9 +11,11 @@ from .const import (
     CONF_COOLDOWN_MINUTES,
     CONF_DAILY_HOURS,
     CONF_EXTRA_FILTER_DURATION,
+    CONF_MIN_ON_MINUTES,
     DEFAULT_COOLDOWN_MINUTES,
     DEFAULT_DAILY_HOURS,
     DEFAULT_EXTRA_FILTER_DURATION,
+    DEFAULT_MIN_ON_MINUTES,
     DOMAIN,
 )
 from .coordinator import PoolCirculationCoordinator
@@ -37,6 +39,7 @@ async def async_setup_entry(
             PoolDailyHoursNumber(coordinator, entry),
             PoolExtraFilterDurationNumber(coordinator, entry),
             PoolPumpCooldownNumber(coordinator, entry),
+            PoolPumpMinOnNumber(coordinator, entry),
         ]
     )
 
@@ -123,5 +126,37 @@ class PoolPumpCooldownNumber(CoordinatorEntity, NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         new_options = {**self._entry.options, CONF_COOLDOWN_MINUTES: int(value)}
+        self.hass.config_entries.async_update_entry(self._entry, options=new_options)
+        await self.coordinator.async_request_refresh()
+
+
+class PoolPumpMinOnNumber(CoordinatorEntity, NumberEntity):
+    """Minimum minutes the pump must stay on once started.
+
+    Prevents the pump from stopping too quickly after turning on due to
+    price signal changes or temperature fluctuations near a threshold.
+    Set to 0 to disable. Freeze protection and extra filter mode bypass this.
+    """
+
+    def __init__(self, coordinator: PoolCirculationCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._attr_name = "Pool Pump Minimum On Time"
+        self._attr_unique_id = f"{entry.entry_id}_min_on_minutes"
+        self._attr_icon = "mdi:timer-play"
+        self._attr_native_min_value = 0
+        self._attr_native_max_value = 60
+        self._attr_native_step = 1
+        self._attr_native_unit_of_measurement = "min"
+        self._attr_mode = NumberMode.BOX
+        self._attr_device_info = _DEVICE_INFO(entry)
+
+    @property
+    def native_value(self) -> float:
+        cfg = {**self._entry.data, **self._entry.options}
+        return cfg.get(CONF_MIN_ON_MINUTES, DEFAULT_MIN_ON_MINUTES)
+
+    async def async_set_native_value(self, value: float) -> None:
+        new_options = {**self._entry.options, CONF_MIN_ON_MINUTES: int(value)}
         self.hass.config_entries.async_update_entry(self._entry, options=new_options)
         await self.coordinator.async_request_refresh()
