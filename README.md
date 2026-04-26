@@ -160,6 +160,9 @@ Go to **Settings → Devices & Services → Pool Circulation → Configure** to 
 | `number.pool_extra_filter_duration` | Duration of extra filter mode in minutes (editable in UI, default 60) |
 | `number.pool_pump_cooldown` | Minimum minutes between pump off → on (0 = disabled, default 10) |
 | `number.pool_pump_minimum_on_time` | Minimum minutes pump must stay on once started (0 = disabled, default 10) |
+| `number.pool_heat_pump_target_best_price` | Heat pump target temperature during best-price hours (default 31°C) |
+| `number.pool_heat_pump_target_normal` | Heat pump target temperature during normal hours (default 30°C) |
+| `number.pool_heating_threshold` | Pool temp below which heat pump activates during any running mode (default 29°C) |
 
 ---
 
