@@ -20,6 +20,7 @@ from .const import (
     CONF_BINARY_BEST_PRICE,
     CONF_BINARY_PEAK_PRICE,
     CONF_CLIMATE_HEAT_PUMP,
+    CONF_COOLDOWN_MINUTES,
     CONF_COVER_POOL,
     CONF_DAILY_HOURS,
     CONF_EXTRA_FILTER_DURATION,
@@ -39,6 +40,7 @@ from .const import (
     CONF_TEMP_ALGAE_THRESHOLD,
     CONF_TEMP_FREEZE_THRESHOLD,
     COORDINATOR_UPDATE_INTERVAL,
+    DEFAULT_COOLDOWN_MINUTES,
     DEFAULT_DAILY_HOURS,
     DEFAULT_EXTRA_FILTER_DURATION,
     DEFAULT_RPM_HIGH,
@@ -83,6 +85,9 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         # Extra filter state — not persisted (resets on HA restart)
         self.extra_filter_active: bool = False
         self._extra_filter_task: asyncio.Task | None = None
+
+        # Cooldown: timestamp of last pump-off to prevent rapid on/off cycling
+        self._last_turned_off: datetime | None = None
 
         # Temperature sensor state-change subscriptions (managed separately
         # so they can be refreshed when options change entity IDs)
@@ -171,6 +176,12 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             self.hours_run_today = 0
         self.current_mode = stored.get("current_mode", MODE_OFF)
         self.automation_enabled = stored.get("automation_enabled", True)
+        raw_ts = stored.get("last_turned_off")
+        if raw_ts:
+            try:
+                self._last_turned_off = datetime.fromisoformat(raw_ts)
+            except ValueError:
+                self._last_turned_off = None
 
     async def _save_state(self) -> None:
         await self._store.async_save(
@@ -179,6 +190,9 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
                 "hours_run_today": self.hours_run_today,
                 "current_mode": self.current_mode,
                 "automation_enabled": self.automation_enabled,
+                "last_turned_off": (
+                    self._last_turned_off.isoformat() if self._last_turned_off else None
+                ),
             }
         )
 
@@ -373,21 +387,43 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
 
         return False
 
+    def _in_cooldown(self) -> bool:
+        """Return True if the pump is within the cooldown window after turning off.
+
+        Freeze protection and extra filter mode bypass cooldown — they are either
+        safety-critical or explicitly triggered by the user.
+        """
+        cooldown = int(self.cfg.get(CONF_COOLDOWN_MINUTES, DEFAULT_COOLDOWN_MINUTES))
+        if cooldown == 0 or self._last_turned_off is None:
+            return False
+        elapsed_seconds = (datetime.now() - self._last_turned_off).total_seconds()
+        return elapsed_seconds < cooldown * 60
+
+    def _cooldown_remaining_seconds(self) -> int:
+        """Seconds remaining in the current cooldown, or 0 if not in cooldown."""
+        cooldown = int(self.cfg.get(CONF_COOLDOWN_MINUTES, DEFAULT_COOLDOWN_MINUTES))
+        if cooldown == 0 or self._last_turned_off is None:
+            return 0
+        elapsed = (datetime.now() - self._last_turned_off).total_seconds()
+        remaining = cooldown * 60 - elapsed
+        return max(0, int(remaining))
+
     def _decide_mode(self) -> str:
         """Determine the target mode from current signals and state.
 
         Priority (highest → lowest):
-        1. Freeze protection — outdoor temp ≤ freeze threshold → LOW
-        2. Extra filter active → HIGH (forces circulation regardless of price)
+        1. Freeze protection — outdoor temp ≤ freeze threshold → LOW (bypasses cooldown)
+        2. Extra filter active → HIGH (bypasses cooldown — user explicitly triggered)
         3. Automation disabled → hold current mode
         4. Algae skip — pool temp < algae threshold → OFF
-        5. Price logic + must-run override
+        5. Cooldown — pump was recently turned off → hold OFF
+        6. Price logic + must-run override
         """
-        # 1. Freeze protection overrides everything
+        # 1. Freeze protection overrides everything — safety critical, no cooldown
         if self._freeze_risk():
             return MODE_LOW
 
-        # 2. Extra filter forces high RPM
+        # 2. Extra filter forces high RPM — user intentionally triggered, no cooldown
         if self.extra_filter_active:
             return MODE_HIGH
 
@@ -412,18 +448,25 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             _LOGGER.debug(
                 "Must-run override: need %d hours, %d left today", hours_needed, hours_left
             )
-            return MODE_MEDIUM
+            desired = MODE_MEDIUM
+        elif is_peak:
+            desired = MODE_OFF
+        elif is_best:
+            desired = MODE_HIGH
+        elif hours_needed > 0:
+            desired = MODE_MEDIUM
+        else:
+            desired = MODE_OFF
 
-        if is_peak:
+        # 6. Cooldown — don't turn on if pump was recently switched off
+        if desired != MODE_OFF and self.current_mode == MODE_OFF and self._in_cooldown():
+            remaining = self._cooldown_remaining_seconds()
+            _LOGGER.debug(
+                "Cooldown active: holding pump off for %d more seconds", remaining
+            )
             return MODE_OFF
 
-        if is_best:
-            return MODE_HIGH
-
-        if hours_needed > 0:
-            return MODE_MEDIUM
-
-        return MODE_OFF
+        return desired
 
     # ------------------------------------------------------------------
     # Mode application
@@ -441,6 +484,11 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         _LOGGER.info("Mode change: %s → %s", self.current_mode, mode)
         previous = self.current_mode
         self.current_mode = mode
+
+        # Record when pump turns off so cooldown can be enforced
+        if mode == MODE_OFF and previous != MODE_OFF:
+            self._last_turned_off = datetime.now()
+            _LOGGER.debug("Pump turned off — cooldown starts now")
 
         # --- Circulation pump ---
         circ = self.cfg.get(CONF_SWITCH_CIRCULATION)
@@ -633,6 +681,8 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             "must_run": hours_needed > 0 and hours_needed >= hours_left,
             "too_cold": self._too_cold_to_circulate(),
             "freeze_risk": self._freeze_risk(),
+            "in_cooldown": self._in_cooldown(),
+            "cooldown_remaining": self._cooldown_remaining_seconds(),
             "outdoor_temp": self._state_float(CONF_SENSOR_OUTDOOR_TEMP),
             "pool_temp": self._state_float(CONF_SENSOR_POOL_TEMP),
             "active_rpm": self._active_rpm(),

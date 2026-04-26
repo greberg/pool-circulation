@@ -8,8 +8,10 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
+    CONF_COOLDOWN_MINUTES,
     CONF_DAILY_HOURS,
     CONF_EXTRA_FILTER_DURATION,
+    DEFAULT_COOLDOWN_MINUTES,
     DEFAULT_DAILY_HOURS,
     DEFAULT_EXTRA_FILTER_DURATION,
     DOMAIN,
@@ -34,6 +36,7 @@ async def async_setup_entry(
         [
             PoolDailyHoursNumber(coordinator, entry),
             PoolExtraFilterDurationNumber(coordinator, entry),
+            PoolPumpCooldownNumber(coordinator, entry),
         ]
     )
 
@@ -88,5 +91,37 @@ class PoolExtraFilterDurationNumber(CoordinatorEntity, NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         new_options = {**self._entry.options, CONF_EXTRA_FILTER_DURATION: int(value)}
+        self.hass.config_entries.async_update_entry(self._entry, options=new_options)
+        await self.coordinator.async_request_refresh()
+
+
+class PoolPumpCooldownNumber(CoordinatorEntity, NumberEntity):
+    """Minimum minutes to wait before turning the pump back on after it turned off.
+
+    Prevents rapid on/off cycling caused by price signal edge cases or temperature
+    fluctuations near a threshold. Set to 0 to disable cooldown entirely.
+    Freeze protection and extra filter mode always bypass the cooldown.
+    """
+
+    def __init__(self, coordinator: PoolCirculationCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._attr_name = "Pool Pump Cooldown"
+        self._attr_unique_id = f"{entry.entry_id}_cooldown_minutes"
+        self._attr_icon = "mdi:timer-pause"
+        self._attr_native_min_value = 0
+        self._attr_native_max_value = 60
+        self._attr_native_step = 1
+        self._attr_native_unit_of_measurement = "min"
+        self._attr_mode = NumberMode.BOX
+        self._attr_device_info = _DEVICE_INFO(entry)
+
+    @property
+    def native_value(self) -> float:
+        cfg = {**self._entry.data, **self._entry.options}
+        return cfg.get(CONF_COOLDOWN_MINUTES, DEFAULT_COOLDOWN_MINUTES)
+
+    async def async_set_native_value(self, value: float) -> None:
+        new_options = {**self._entry.options, CONF_COOLDOWN_MINUTES: int(value)}
         self.hass.config_entries.async_update_entry(self._entry, options=new_options)
         await self.coordinator.async_request_refresh()

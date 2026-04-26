@@ -15,6 +15,7 @@ A Home Assistant custom component that automatically controls your pool circulat
 | **Algae skip** | Skips circulation when pool water temp is below the algae growth threshold |
 | **Freeze protection** | Forces low-speed circulation when outdoor temp drops to freeze threshold — overrides everything |
 | **Extra filter mode** | On-demand switch that forces high RPM for a configurable duration, then auto-disables |
+| **Pump cooldown** | Configurable minimum wait before pump can turn back on after stopping — prevents rapid on/off cycling |
 | **UV lamp control** | Automatically turns UV lamp on when pump is running and pool cover is not open |
 | **Heat pump control** | Turns heat pump on/off via any `climate` entity |
 | **3-speed RPM control** | Maps low / medium / high RPM to individual switches; shows 0 when pump is off |
@@ -37,12 +38,13 @@ Every hour at HH:00, the coordinator evaluates price signals and sets one of fou
 | `off` | Peak price, daily target met, or **algae skip** | All switches OFF | OFF | OFF |
 
 **Priority order (highest → lowest):**
-1. **Freeze protection** — outdoor temp ≤ freeze threshold (default 2°C) → forces `low`, ignores everything else
-2. **Extra filter active** → forces `high` regardless of price or schedule
+1. **Freeze protection** — outdoor temp ≤ freeze threshold (default 2°C) → forces `low`, bypasses cooldown
+2. **Extra filter active** → forces `high` regardless of price or schedule, bypasses cooldown
 3. **Automation switch off** → holds current mode
 4. **Algae skip** — pool water temp below algae threshold (default 8°C) → `off`
-5. **Price logic** — peak → `off`, best → `high`, normal → `medium` if hours still needed
-6. **Must-run override** — hours needed ≥ hours left today → forces `medium` regardless of price
+5. **Cooldown** — pump turned off recently → holds `off` until cooldown elapses (default 10 min)
+6. **Price logic** — peak → `off`, best → `high`, normal → `medium` if hours still needed
+7. **Must-run override** — hours needed ≥ hours left today → forces `medium` regardless of price
 
 ---
 
@@ -105,6 +107,7 @@ Any Nordpool or Tibber-based price integration with equivalent entities works �
 | UV lamp switch | — | Controlled automatically based on circulation state |
 | Pool cover entity | — | UV lamp stays off when cover is open |
 | Extra filter duration | — | Minutes to run after extra filter is activated (default 60, range 5–480) |
+| Pump cooldown | — | Minutes to wait before pump can turn on again after stopping (default 10, 0 = disabled) |
 
 ### Options (editable after setup)
 
@@ -125,7 +128,7 @@ Go to **Settings → Devices & Services → Pool Circulation → Configure** to 
 ### Sensors
 | Entity | Description |
 |---|---|
-| `sensor.pool_circulation_mode` | Current mode: `off` / `low` / `medium` / `high` — attributes include `too_cold`, `freeze_risk`, `extra_filter_active`, `uv_on`, temps, price |
+| `sensor.pool_circulation_mode` | Current mode: `off` / `low` / `medium` / `high` — attributes include `too_cold`, `freeze_risk`, `in_cooldown`, `cooldown_remaining`, `extra_filter_active`, `uv_on`, temps, price |
 | `sensor.pool_circulation_rpm` | Current RPM (numeric) — reads actual RPM sensor if configured, otherwise derived from active switch; `0` when pump is off |
 | `sensor.pool_heat_pump_mode` | Current HVAC mode of the heat pump: `off` / `cool` / `heat` / `auto` |
 | `sensor.pool_heat_pump_current_temperature` | Temperature reading from the heat pump — attributes include target temp and fan mode |
@@ -147,6 +150,7 @@ Go to **Settings → Devices & Services → Pool Circulation → Configure** to 
 |---|---|
 | `number.pool_circulation_daily_hours` | Target circulation hours per day (editable in UI) |
 | `number.pool_extra_filter_duration` | Duration of extra filter mode in minutes (editable in UI, default 60) |
+| `number.pool_pump_cooldown` | Minimum minutes between pump off → on (0 = disabled, default 10) |
 
 ---
 

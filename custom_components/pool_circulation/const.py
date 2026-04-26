@@ -26,6 +26,7 @@ CONF_SWITCH_UV_LAMP = "switch_uv_lamp"
 CONF_COVER_POOL = "cover_pool"
 CONF_EXTRA_FILTER_DURATION = "extra_filter_duration"
 CONF_SENSOR_ACTUAL_RPM = "sensor_actual_rpm"
+CONF_COOLDOWN_MINUTES = "cooldown_minutes"
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -38,6 +39,7 @@ DEFAULT_RPM_LOW = 1000
 DEFAULT_RPM_MEDIUM = 2000
 DEFAULT_RPM_HIGH = 3000
 DEFAULT_EXTRA_FILTER_DURATION = 60   # minutes
+DEFAULT_COOLDOWN_MINUTES = 10        # minutes between pump off → on
 
 # Default entity IDs (Trulsibrunn Nordpool integration)
 DEFAULT_SENSOR_PRICE = "sensor.trulsibrunn_timpris_aktuell"
