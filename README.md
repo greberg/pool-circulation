@@ -18,7 +18,7 @@ A Home Assistant custom component that automatically controls your pool circulat
 | **Pump cooldown** | Configurable minimum wait before pump can turn back on after stopping — prevents rapid on/off cycling |
 | **Minimum on-time** | Configurable minimum time pump must stay on once started — prevents brief on/off bursts |
 | **UV lamp control** | Automatically turns UV lamp on when pump is running and pool cover is not open |
-| **Heat pump control** | Turns heat pump on/off via any `climate` entity |
+| **Heat pump control** | Turns heat pump on/off and sets target temperature based on price period and pool temperature |
 | **3-speed RPM control** | Maps low / medium / high RPM to individual switches; shows 0 when pump is off |
 | **Persisted state** | Daily hours counter survives HA restarts; resets at midnight |
 | **Automation switch** | Pause the scheduler without changing any other config |
@@ -33,9 +33,9 @@ Every hour at HH:00, the coordinator evaluates price signals and sets one of fou
 
 | Mode | Condition | Circulation | Heat pump | UV lamp |
 |---|---|---|---|---|
-| `low` | **Freeze protection** — outdoor temp ≤ freeze threshold | Low RPM ON | OFF | ON |
-| `high` | Best-price period active **or** extra filter active | High RPM switch ON | ON (best price only) | ON |
-| `medium` | Normal price, hours still needed | Medium RPM switch ON | OFF | ON |
+| `low` | **Freeze protection** — outdoor temp ≤ freeze threshold | Low RPM ON | ON if pool cold | ON |
+| `high` | Best-price period active **or** extra filter active | High RPM switch ON | ON at best-price target temp | ON |
+| `medium` | Normal price, hours still needed | Medium RPM switch ON | ON at normal target temp if pool cold | ON |
 | `off` | Peak price, daily target met, or **algae skip** | All switches OFF | OFF | OFF |
 
 **Priority order (highest → lowest):**
@@ -105,6 +105,9 @@ Any Nordpool or Tibber-based price integration with equivalent entities works �
 | Pool temperature sensor | — | Used for algae skip |
 | Algae growth threshold | — | Default 8°C — skip circulation below this pool temp |
 | Freeze protection threshold | — | Default 2°C — force low-speed circulation below this outdoor temp |
+| Heat pump target (best price) | — | Target temp during best-price hours (default 31°C) |
+| Heat pump target (normal) | — | Target temp during normal hours (default 30°C) |
+| Pool heating threshold | — | Turn on heat pump if pool temp drops below this, even outside best-price hours (default 29°C) |
 | Actual RPM sensor | — | Optional sensor reporting real inverter RPM (e.g. ESPHome). When set, overrides the switch-derived RPM value |
 | UV lamp switch | — | Controlled automatically based on circulation state |
 | Pool cover entity | — | UV lamp stays off when cover is open |
@@ -120,6 +123,8 @@ Go to **Settings → Devices & Services → Pool Circulation → Configure** to 
 - Outdoor and pool temperature sensors
 - Algae growth threshold (°C)
 - Freeze protection threshold (°C)
+- Heat pump target temperatures (best price / normal)
+- Pool heating threshold (°C)
 - Actual RPM sensor entity
 - UV lamp switch and pool cover entity
 - Extra filter duration (minutes)

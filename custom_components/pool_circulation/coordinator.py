@@ -40,11 +40,17 @@ from .const import (
     CONF_SWITCH_RPM_MEDIUM,
     CONF_TEMP_ALGAE_THRESHOLD,
     CONF_TEMP_FREEZE_THRESHOLD,
+    CONF_HP_TEMP_BEST_PRICE,
+    CONF_HP_TEMP_NORMAL,
+    CONF_POOL_TEMP_HEATING_THRESHOLD,
     COORDINATOR_UPDATE_INTERVAL,
     DEFAULT_COOLDOWN_MINUTES,
     DEFAULT_MIN_ON_MINUTES,
     DEFAULT_DAILY_HOURS,
     DEFAULT_EXTRA_FILTER_DURATION,
+    DEFAULT_HP_TEMP_BEST_PRICE,
+    DEFAULT_HP_TEMP_NORMAL,
+    DEFAULT_POOL_TEMP_HEATING_THRESHOLD,
     DEFAULT_RPM_HIGH,
     DEFAULT_RPM_LOW,
     DEFAULT_RPM_MEDIUM,
@@ -292,12 +298,21 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         outdoor_sensor = self.cfg.get(CONF_SENSOR_OUTDOOR_TEMP)
 
         if entity_id == pool_sensor:
-            threshold = float(self.cfg.get(CONF_TEMP_ALGAE_THRESHOLD, DEFAULT_TEMP_ALGAE_THRESHOLD))
-            if old_val is None or (old_val >= threshold) != (new_val >= threshold):
+            algae_threshold = float(self.cfg.get(CONF_TEMP_ALGAE_THRESHOLD, DEFAULT_TEMP_ALGAE_THRESHOLD))
+            heating_threshold = float(self.cfg.get(CONF_POOL_TEMP_HEATING_THRESHOLD, DEFAULT_POOL_TEMP_HEATING_THRESHOLD))
+            crossed_algae = old_val is None or (old_val >= algae_threshold) != (new_val >= algae_threshold)
+            crossed_heating = old_val is None or (old_val >= heating_threshold) != (new_val >= heating_threshold)
+            if crossed_algae:
                 _LOGGER.debug(
                     "Pool temp crossed algae threshold (%.1f°C): %.1f → %.1f — re-evaluating mode",
-                    threshold, old_val if old_val is not None else float("nan"), new_val,
+                    algae_threshold, old_val if old_val is not None else float("nan"), new_val,
                 )
+            if crossed_heating:
+                _LOGGER.debug(
+                    "Pool temp crossed heating threshold (%.1f°C): %.1f → %.1f — re-evaluating heat pump",
+                    heating_threshold, old_val if old_val is not None else float("nan"), new_val,
+                )
+            if crossed_algae or crossed_heating:
                 self.hass.async_create_task(self.async_evaluate_mode())
 
         elif entity_id == outdoor_sensor:
@@ -519,6 +534,9 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         if target != self.current_mode:
             await self.async_set_mode(target)
         else:
+            # Mode unchanged — but heat pump target temp may still need updating
+            # (e.g. pool temp crossed the heating threshold without a mode change)
+            await self._update_heat_pump(self.current_mode)
             self.async_set_updated_data(self._build_data())
 
     async def async_set_mode(self, mode: str) -> None:
@@ -554,17 +572,8 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             if entity:
                 await self._switch(entity, mode == m)
 
-        # --- Heat pump: only ON during HIGH (best price window) ---
-        hp = self.cfg.get(CONF_CLIMATE_HEAT_PUMP)
-        if hp:
-            if mode == MODE_HIGH:
-                await self.hass.services.async_call(
-                    "climate", "turn_on", {"entity_id": hp}, blocking=True
-                )
-            else:
-                await self.hass.services.async_call(
-                    "climate", "turn_off", {"entity_id": hp}, blocking=True
-                )
+        # --- Heat pump ---
+        await self._update_heat_pump(mode)
 
         # --- UV lamp ---
         await self._update_uv_lamp(mode)
@@ -587,6 +596,62 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         await self.hass.services.async_call(
             "switch", service, {"entity_id": entity_id}, blocking=True
         )
+
+    # ------------------------------------------------------------------
+    # Heat pump
+    # ------------------------------------------------------------------
+    async def _update_heat_pump(self, mode: str) -> None:
+        """Set heat pump state and target temperature based on mode and pool temp.
+
+        Rules:
+        - MODE_HIGH (best price): turn ON at best-price target temp
+        - MODE_MEDIUM / MODE_LOW: turn ON at normal target temp IF pool is below
+          the heating threshold (pool is getting cold and needs heating)
+        - MODE_OFF: turn OFF (no circulation = no point heating)
+        """
+        hp = self.cfg.get(CONF_CLIMATE_HEAT_PUMP)
+        if not hp:
+            return
+
+        best_price_temp = float(self.cfg.get(CONF_HP_TEMP_BEST_PRICE, DEFAULT_HP_TEMP_BEST_PRICE))
+        normal_temp = float(self.cfg.get(CONF_HP_TEMP_NORMAL, DEFAULT_HP_TEMP_NORMAL))
+        heating_threshold = float(
+            self.cfg.get(CONF_POOL_TEMP_HEATING_THRESHOLD, DEFAULT_POOL_TEMP_HEATING_THRESHOLD)
+        )
+
+        pool_temp = self._state_float(CONF_SENSOR_POOL_TEMP)
+        pool_cold = pool_temp is not None and pool_temp < heating_threshold
+
+        if mode == MODE_HIGH:
+            target_temp = best_price_temp
+            hp_on = True
+        elif mode in (MODE_MEDIUM, MODE_LOW) and pool_cold:
+            target_temp = normal_temp
+            hp_on = True
+        else:
+            target_temp = None
+            hp_on = False
+
+        if hp_on:
+            if target_temp is not None:
+                await self.hass.services.async_call(
+                    "climate",
+                    "set_temperature",
+                    {"entity_id": hp, "temperature": target_temp},
+                    blocking=True,
+                )
+            await self.hass.services.async_call(
+                "climate", "turn_on", {"entity_id": hp}, blocking=True
+            )
+            _LOGGER.debug(
+                "Heat pump ON: mode=%s, target=%.1f°C, pool_temp=%s",
+                mode, target_temp, pool_temp,
+            )
+        else:
+            await self.hass.services.async_call(
+                "climate", "turn_off", {"entity_id": hp}, blocking=True
+            )
+            _LOGGER.debug("Heat pump OFF: mode=%s", mode)
 
     # ------------------------------------------------------------------
     # UV lamp
@@ -738,6 +803,11 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             "hp_current_temp": self._hp_attr("current_temperature"),
             "hp_target_temp": self._hp_attr("temperature"),
             "hp_fan_mode": self._hp_attr("fan_mode"),
+            "pool_heating_active": (
+                self._state_float(CONF_SENSOR_POOL_TEMP) is not None
+                and (self._state_float(CONF_SENSOR_POOL_TEMP) or 999)
+                < float(self.cfg.get(CONF_POOL_TEMP_HEATING_THRESHOLD, DEFAULT_POOL_TEMP_HEATING_THRESHOLD))
+            ),
         }
 
     async def _async_update_data(self) -> dict:

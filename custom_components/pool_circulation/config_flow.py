@@ -30,6 +30,9 @@ from .const import (
     CONF_SWITCH_UV_LAMP,
     CONF_TEMP_ALGAE_THRESHOLD,
     CONF_TEMP_FREEZE_THRESHOLD,
+    CONF_HP_TEMP_BEST_PRICE,
+    CONF_HP_TEMP_NORMAL,
+    CONF_POOL_TEMP_HEATING_THRESHOLD,
     DEFAULT_BINARY_BEST_PRICE,
     DEFAULT_BINARY_PEAK_PRICE,
     DEFAULT_COOLDOWN_MINUTES,
@@ -44,6 +47,9 @@ from .const import (
     DEFAULT_SENSOR_PRICE_LEVEL,
     DEFAULT_TEMP_ALGAE_THRESHOLD,
     DEFAULT_TEMP_FREEZE_THRESHOLD,
+    DEFAULT_HP_TEMP_BEST_PRICE,
+    DEFAULT_HP_TEMP_NORMAL,
+    DEFAULT_POOL_TEMP_HEATING_THRESHOLD,
     DOMAIN,
 )
 
@@ -76,6 +82,16 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         ): vol.Coerce(float),
         vol.Optional(
             CONF_TEMP_FREEZE_THRESHOLD, default=DEFAULT_TEMP_FREEZE_THRESHOLD
+        ): vol.Coerce(float),
+        # Heat pump temperature targets
+        vol.Optional(
+            CONF_HP_TEMP_BEST_PRICE, default=DEFAULT_HP_TEMP_BEST_PRICE
+        ): vol.Coerce(float),
+        vol.Optional(
+            CONF_HP_TEMP_NORMAL, default=DEFAULT_HP_TEMP_NORMAL
+        ): vol.Coerce(float),
+        vol.Optional(
+            CONF_POOL_TEMP_HEATING_THRESHOLD, default=DEFAULT_POOL_TEMP_HEATING_THRESHOLD
         ): vol.Coerce(float),
         # Actual RPM sensor (optional — overrides switch-derived RPM)
         vol.Optional(CONF_SENSOR_ACTUAL_RPM, default=""): str,
@@ -168,6 +184,18 @@ class PoolCirculationOptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(
                     CONF_TEMP_FREEZE_THRESHOLD,
                     default=cfg.get(CONF_TEMP_FREEZE_THRESHOLD, DEFAULT_TEMP_FREEZE_THRESHOLD),
+                ): vol.Coerce(float),
+                vol.Optional(
+                    CONF_HP_TEMP_BEST_PRICE,
+                    default=cfg.get(CONF_HP_TEMP_BEST_PRICE, DEFAULT_HP_TEMP_BEST_PRICE),
+                ): vol.Coerce(float),
+                vol.Optional(
+                    CONF_HP_TEMP_NORMAL,
+                    default=cfg.get(CONF_HP_TEMP_NORMAL, DEFAULT_HP_TEMP_NORMAL),
+                ): vol.Coerce(float),
+                vol.Optional(
+                    CONF_POOL_TEMP_HEATING_THRESHOLD,
+                    default=cfg.get(CONF_POOL_TEMP_HEATING_THRESHOLD, DEFAULT_POOL_TEMP_HEATING_THRESHOLD),
                 ): vol.Coerce(float),
                 vol.Optional(
                     CONF_SENSOR_ACTUAL_RPM,
