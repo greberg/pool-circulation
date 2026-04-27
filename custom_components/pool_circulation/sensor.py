@@ -72,6 +72,7 @@ class PoolCirculationModeSensor(_SensorBase):
             "is_peak_price": d.get("is_peak_price"),
             "must_run": d.get("must_run"),
             "too_cold": d.get("too_cold"),
+            "scheduling_active": d.get("scheduling_active"),
             "freeze_risk": d.get("freeze_risk"),
             "in_cooldown": d.get("in_cooldown"),
             "cooldown_remaining": d.get("cooldown_remaining"),

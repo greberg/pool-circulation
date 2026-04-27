@@ -457,6 +457,19 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         remaining = min_on * 60 - elapsed
         return max(0, int(remaining))
 
+    def _scheduling_active(self) -> bool:
+        """Return True when price-based scheduling and daily hours target should apply.
+
+        Scheduling is only meaningful when the pool is warm enough for algae to grow —
+        i.e. when regular circulation is actually needed. Below the algae threshold the
+        water is too cold for biological activity so there is no point running the pump
+        for energy/filtration reasons; the cheapest option is simply to stay off.
+
+        If no pool temperature sensor is configured we assume the pool is warm and
+        scheduling applies (safe default — better to over-circulate than skip).
+        """
+        return not self._too_cold_to_circulate()
+
     def _decide_mode(self) -> str:
         """Determine the target mode from current signals and state.
 
@@ -466,8 +479,9 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         3. Automation disabled → hold current mode
         4. Min-on — pump started recently → hold current running mode (blocks algae skip,
            peak price, and any other reason to stop — pump must run its minimum time)
-        5. Algae skip — pool temp < algae threshold → OFF
-        6. Price logic + must-run override
+        5. Pool temperature gate — pool below algae threshold → OFF, no scheduling
+           (price optimisation and daily hours only apply when pool is warm enough)
+        6. Price logic + must-run override (only reached when pool is warm)
         7. Cooldown — pump was recently turned off → hold OFF
         """
         # 1. Freeze protection overrides everything — safety critical, bypasses timers
@@ -482,10 +496,9 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         if not self.automation_enabled:
             return self.current_mode
 
-        # 4. Min-on — if pump is running and hasn't met its minimum on-time, keep it on.
-        #    This must come before algae skip and price logic so that a brief temperature
-        #    dip below the algae threshold (or a peak price window) cannot turn the pump
-        #    off within seconds of it starting.
+        # 4. Min-on — keep pump running if it hasn't met minimum on-time yet.
+        #    Evaluated before the temperature gate so a brief dip below threshold
+        #    cannot stop the pump within seconds of it starting.
         if self.current_mode != MODE_OFF and self._in_min_on():
             remaining = self._min_on_remaining_seconds()
             _LOGGER.debug(
@@ -493,17 +506,28 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             )
             return self.current_mode
 
-        # 5. Algae skip — pool water too cold for biological activity
-        if self._too_cold_to_circulate():
+        # 5. Pool temperature gate — price and daily hours only apply when the pool
+        #    is warm enough for algae growth (above the algae threshold).
+        #    Below that temperature the pump should stay off entirely — there is no
+        #    biological reason to circulate and no energy benefit in price optimisation.
+        if not self._scheduling_active():
+            _LOGGER.debug(
+                "Scheduling inactive: pool too cold (threshold %.1f°C) — pump off",
+                float(self.cfg.get(CONF_TEMP_ALGAE_THRESHOLD, DEFAULT_TEMP_ALGAE_THRESHOLD)),
+            )
             return MODE_OFF
 
-        # 6. Price logic + must-run
+        # 6. Price logic + must-run (only reached when pool is warm enough)
         is_peak = self._state_is_on(CONF_BINARY_PEAK_PRICE)
         is_best = self._state_is_on(CONF_BINARY_BEST_PRICE)
 
         now = datetime.now()
         hours_left = 24 - now.hour
         hours_needed = max(0, self.daily_hours_target - self.hours_run_today)
+
+        # Must-run: only applies when pool is warm — on a cold day the pump sat idle
+        # because it was below threshold, not because scheduling failed, so we should
+        # not try to make up missed hours now that temp briefly crossed the threshold.
         must_run = hours_needed > 0 and hours_needed >= hours_left
 
         if must_run:
@@ -795,6 +819,7 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             "is_peak_price": self._state_is_on(CONF_BINARY_PEAK_PRICE),
             "must_run": hours_needed > 0 and hours_needed >= hours_left,
             "too_cold": self._too_cold_to_circulate(),
+            "scheduling_active": self._scheduling_active(),
             "freeze_risk": self._freeze_risk(),
             "in_cooldown": self._in_cooldown(),
             "cooldown_remaining": self._cooldown_remaining_seconds(),
