@@ -436,10 +436,11 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
     def _in_min_on(self) -> bool:
         """Return True if the pump is within the minimum on-time window.
 
-        Prevents the pump from being turned off too quickly after starting.
-        Freeze protection can still override the mode (e.g. medium → low) but
-        the pump itself stays running, so this constraint is only relevant when
-        the desired mode is OFF.
+        Prevents the pump from being turned off too quickly after starting —
+        including by algae skip, peak price, or any other reason. Evaluated
+        before algae skip in _decide_mode so a brief temperature dip cannot
+        stop the pump within seconds of it turning on.
+        Only freeze protection and extra filter bypass this.
         """
         min_on = int(self.cfg.get(CONF_MIN_ON_MINUTES, DEFAULT_MIN_ON_MINUTES))
         if min_on == 0 or self._last_turned_on is None:
@@ -463,10 +464,11 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         1. Freeze protection — outdoor temp ≤ freeze threshold → LOW (bypasses both timers)
         2. Extra filter active → HIGH (bypasses both timers — user explicitly triggered)
         3. Automation disabled → hold current mode
-        4. Algae skip — pool temp < algae threshold → OFF
-        5. Min-on — pump started recently → hold current running mode instead of stopping
-        6. Cooldown — pump was recently turned off → hold OFF
-        7. Price logic + must-run override
+        4. Min-on — pump started recently → hold current running mode (blocks algae skip,
+           peak price, and any other reason to stop — pump must run its minimum time)
+        5. Algae skip — pool temp < algae threshold → OFF
+        6. Price logic + must-run override
+        7. Cooldown — pump was recently turned off → hold OFF
         """
         # 1. Freeze protection overrides everything — safety critical, bypasses timers
         if self._freeze_risk():
@@ -480,11 +482,22 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         if not self.automation_enabled:
             return self.current_mode
 
-        # 4. Algae skip — pool water too cold for biological activity
+        # 4. Min-on — if pump is running and hasn't met its minimum on-time, keep it on.
+        #    This must come before algae skip and price logic so that a brief temperature
+        #    dip below the algae threshold (or a peak price window) cannot turn the pump
+        #    off within seconds of it starting.
+        if self.current_mode != MODE_OFF and self._in_min_on():
+            remaining = self._min_on_remaining_seconds()
+            _LOGGER.debug(
+                "Min-on active: holding pump on for %d more seconds", remaining
+            )
+            return self.current_mode
+
+        # 5. Algae skip — pool water too cold for biological activity
         if self._too_cold_to_circulate():
             return MODE_OFF
 
-        # 5. Price logic + must-run
+        # 6. Price logic + must-run
         is_peak = self._state_is_on(CONF_BINARY_PEAK_PRICE)
         is_best = self._state_is_on(CONF_BINARY_BEST_PRICE)
 
@@ -506,14 +519,6 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             desired = MODE_MEDIUM
         else:
             desired = MODE_OFF
-
-        # 6. Min-on — keep pump running if it hasn't met minimum on-time yet
-        if desired == MODE_OFF and self.current_mode != MODE_OFF and self._in_min_on():
-            remaining = self._min_on_remaining_seconds()
-            _LOGGER.debug(
-                "Min-on active: holding pump on for %d more seconds", remaining
-            )
-            return self.current_mode
 
         # 7. Cooldown — don't turn on if pump was recently switched off
         if desired != MODE_OFF and self.current_mode == MODE_OFF and self._in_cooldown():
