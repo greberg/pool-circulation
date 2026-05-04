@@ -98,6 +98,9 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         self._last_turned_off: datetime | None = None
         self._last_turned_on: datetime | None = None
 
+        # Cache of previous options so the smart update listener can diff changes
+        self._prev_options: dict = dict(entry.options)
+
         # Temperature sensor state-change subscriptions (managed separately
         # so they can be refreshed when options change entity IDs)
         self._temp_watcher_unsubs: list[Any] = []
@@ -163,6 +166,7 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         _LOGGER.info("Pool Circulation: hourly price-based scheduler active")
 
     async def async_unload(self) -> None:
+        await self._save_state()  # persist hours_run_today before any reload
         if self._extra_filter_task:
             self._extra_filter_task.cancel()
             self._extra_filter_task = None

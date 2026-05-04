@@ -77,7 +77,6 @@ class PoolDailyHoursNumber(CoordinatorEntity, NumberEntity):
     async def async_set_native_value(self, value: float) -> None:
         new_options = {**self._entry.options, CONF_DAILY_HOURS: int(value)}
         self.hass.config_entries.async_update_entry(self._entry, options=new_options)
-        await self.coordinator.async_request_refresh()
 
 
 class PoolExtraFilterDurationNumber(CoordinatorEntity, NumberEntity):
@@ -104,7 +103,6 @@ class PoolExtraFilterDurationNumber(CoordinatorEntity, NumberEntity):
     async def async_set_native_value(self, value: float) -> None:
         new_options = {**self._entry.options, CONF_EXTRA_FILTER_DURATION: int(value)}
         self.hass.config_entries.async_update_entry(self._entry, options=new_options)
-        await self.coordinator.async_request_refresh()
 
 
 class PoolPumpCooldownNumber(CoordinatorEntity, NumberEntity):
@@ -136,7 +134,6 @@ class PoolPumpCooldownNumber(CoordinatorEntity, NumberEntity):
     async def async_set_native_value(self, value: float) -> None:
         new_options = {**self._entry.options, CONF_COOLDOWN_MINUTES: int(value)}
         self.hass.config_entries.async_update_entry(self._entry, options=new_options)
-        await self.coordinator.async_request_refresh()
 
 
 class PoolPumpMinOnNumber(CoordinatorEntity, NumberEntity):
@@ -168,7 +165,6 @@ class PoolPumpMinOnNumber(CoordinatorEntity, NumberEntity):
     async def async_set_native_value(self, value: float) -> None:
         new_options = {**self._entry.options, CONF_MIN_ON_MINUTES: int(value)}
         self.hass.config_entries.async_update_entry(self._entry, options=new_options)
-        await self.coordinator.async_request_refresh()
 
 
 class PoolHpTempBestPriceNumber(CoordinatorEntity, NumberEntity):
@@ -195,7 +191,6 @@ class PoolHpTempBestPriceNumber(CoordinatorEntity, NumberEntity):
     async def async_set_native_value(self, value: float) -> None:
         new_options = {**self._entry.options, CONF_HP_TEMP_BEST_PRICE: value}
         self.hass.config_entries.async_update_entry(self._entry, options=new_options)
-        await self.coordinator.async_evaluate_mode()
 
 
 class PoolHpTempNormalNumber(CoordinatorEntity, NumberEntity):
@@ -222,7 +217,6 @@ class PoolHpTempNormalNumber(CoordinatorEntity, NumberEntity):
     async def async_set_native_value(self, value: float) -> None:
         new_options = {**self._entry.options, CONF_HP_TEMP_NORMAL: value}
         self.hass.config_entries.async_update_entry(self._entry, options=new_options)
-        await self.coordinator.async_evaluate_mode()
 
 
 class PoolPoolHeatingThresholdNumber(CoordinatorEntity, NumberEntity):
@@ -249,4 +243,3 @@ class PoolPoolHeatingThresholdNumber(CoordinatorEntity, NumberEntity):
     async def async_set_native_value(self, value: float) -> None:
         new_options = {**self._entry.options, CONF_POOL_TEMP_HEATING_THRESHOLD: value}
         self.hass.config_entries.async_update_entry(self._entry, options=new_options)
-        await self.coordinator.async_evaluate_mode()
