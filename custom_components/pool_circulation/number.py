@@ -10,6 +10,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import (
     CONF_COOLDOWN_MINUTES,
     CONF_DAILY_HOURS,
+    CONF_DAILY_LOW_HOURS,
     CONF_EXTRA_FILTER_DURATION,
     CONF_HP_TEMP_BEST_PRICE,
     CONF_HP_TEMP_NORMAL,
@@ -17,6 +18,7 @@ from .const import (
     CONF_POOL_TEMP_HEATING_THRESHOLD,
     DEFAULT_COOLDOWN_MINUTES,
     DEFAULT_DAILY_HOURS,
+    DEFAULT_DAILY_LOW_HOURS,
     DEFAULT_EXTRA_FILTER_DURATION,
     DEFAULT_HP_TEMP_BEST_PRICE,
     DEFAULT_HP_TEMP_NORMAL,
@@ -43,6 +45,7 @@ async def async_setup_entry(
     async_add_entities(
         [
             PoolDailyHoursNumber(coordinator, entry),
+            PoolDailyLowHoursNumber(coordinator, entry),
             PoolExtraFilterDurationNumber(coordinator, entry),
             PoolPumpCooldownNumber(coordinator, entry),
             PoolPumpMinOnNumber(coordinator, entry),
@@ -76,6 +79,38 @@ class PoolDailyHoursNumber(CoordinatorEntity, NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         new_options = {**self._entry.options, CONF_DAILY_HOURS: int(value)}
+        self.hass.config_entries.async_update_entry(self._entry, options=new_options)
+
+
+class PoolDailyLowHoursNumber(CoordinatorEntity, NumberEntity):
+    """Additional LOW-RPM hours to schedule per day.
+
+    After the HIGH-RPM hours are filled with the cheapest electricity, the next
+    cheapest ``low_hours`` are scheduled at LOW RPM — light circulation that still
+    keeps the water moving and does some filtration without the energy draw of
+    medium / high speed. Set to 0 to disable LOW-tier scheduling entirely.
+    """
+
+    def __init__(self, coordinator: PoolCirculationCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._attr_name = "Pool Circulation Daily Low Hours"
+        self._attr_unique_id = f"{entry.entry_id}_daily_low_hours"
+        self._attr_icon = "mdi:clock-minus"
+        self._attr_native_min_value = 0
+        self._attr_native_max_value = 24
+        self._attr_native_step = 1
+        self._attr_native_unit_of_measurement = "h"
+        self._attr_mode = NumberMode.BOX
+        self._attr_device_info = _DEVICE_INFO(entry)
+
+    @property
+    def native_value(self) -> float:
+        cfg = {**self._entry.data, **self._entry.options}
+        return cfg.get(CONF_DAILY_LOW_HOURS, DEFAULT_DAILY_LOW_HOURS)
+
+    async def async_set_native_value(self, value: float) -> None:
+        new_options = {**self._entry.options, CONF_DAILY_LOW_HOURS: int(value)}
         self.hass.config_entries.async_update_entry(self._entry, options=new_options)
 
 

@@ -24,6 +24,7 @@ from .const import (
     CONF_MIN_ON_MINUTES,
     CONF_COVER_POOL,
     CONF_DAILY_HOURS,
+    CONF_DAILY_LOW_HOURS,
     CONF_EXTRA_FILTER_DURATION,
     CONF_SENSOR_ACTUAL_RPM,
     CONF_SENSOR_OUTDOOR_TEMP,
@@ -47,6 +48,7 @@ from .const import (
     DEFAULT_COOLDOWN_MINUTES,
     DEFAULT_MIN_ON_MINUTES,
     DEFAULT_DAILY_HOURS,
+    DEFAULT_DAILY_LOW_HOURS,
     DEFAULT_EXTRA_FILTER_DURATION,
     DEFAULT_HP_TEMP_BEST_PRICE,
     DEFAULT_HP_TEMP_NORMAL,
@@ -102,12 +104,15 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         self._prev_options: dict = dict(entry.options)
 
         # Day-ahead schedule — built from full 24-hour price data at midnight.
-        # When available this replaces the reactive best/peak binary logic:
-        # the cheapest N hours are locked in at day start, each hourly tick
-        # just checks membership. Falls back to binary sensors when price
-        # attribute is unavailable (e.g. Tibber, or before Nordpool publishes).
-        self._daily_schedule: set[int] = set()
+        # Two tiers: cheapest high_hours → HIGH RPM; next low_hours → LOW RPM.
+        # Falls back to reactive binary-sensor mode when price data unavailable.
+        self._daily_schedule: set[int] = set()      # HIGH-RPM hours
+        self._daily_low_schedule: set[int] = set()  # LOW-RPM hours
         self._schedule_date: str | None = None
+        # Track which targets the schedule was built with so a mid-day change
+        # to daily_hours or daily_low_hours forces a rebuild.
+        self._schedule_high_target: int = -1
+        self._schedule_low_target: int = -1
 
         # Temperature sensor state-change subscriptions (managed separately
         # so they can be refreshed when options change entity IDs)
@@ -123,6 +128,10 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
     @property
     def daily_hours_target(self) -> int:
         return int(self.cfg.get(CONF_DAILY_HOURS, DEFAULT_DAILY_HOURS))
+
+    @property
+    def daily_low_hours_target(self) -> int:
+        return int(self.cfg.get(CONF_DAILY_LOW_HOURS, DEFAULT_DAILY_LOW_HOURS))
 
     @property
     def extra_filter_duration(self) -> int:
@@ -194,17 +203,20 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         if stored.get("date") == today:
             self.hours_run_today = stored.get("hours_run_today", 0)
             # Restore day-ahead schedule only when it was built for today
-            raw_schedule = stored.get("daily_schedule")
-            if raw_schedule is not None:
-                self._daily_schedule = set(raw_schedule)
+            raw_high = stored.get("daily_schedule")
+            raw_low = stored.get("daily_low_schedule")
+            if raw_high is not None:
+                self._daily_schedule = set(raw_high)
+                self._daily_low_schedule = set(raw_low or [])
                 self._schedule_date = today
                 _LOGGER.debug(
-                    "Restored day-ahead schedule for %s: hours %s",
-                    today, sorted(self._daily_schedule),
+                    "Restored day-ahead schedule for %s: HIGH %s LOW %s",
+                    today, sorted(self._daily_schedule), sorted(self._daily_low_schedule),
                 )
         else:
             self.hours_run_today = 0
             self._daily_schedule = set()
+            self._daily_low_schedule = set()
             self._schedule_date = None
         self.current_mode = stored.get("current_mode", MODE_OFF)
         self.automation_enabled = stored.get("automation_enabled", True)
@@ -233,6 +245,7 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
                     self._last_turned_on.isoformat() if self._last_turned_on else None
                 ),
                 "daily_schedule": sorted(self._daily_schedule),
+                "daily_low_schedule": sorted(self._daily_low_schedule),
                 "schedule_date": self._schedule_date,
             }
         )
@@ -268,6 +281,7 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         # Nordpool refreshes today's prices at midnight so the rebuild will have
         # the correct 24-hour price list for the new day.
         self._daily_schedule = set()
+        self._daily_low_schedule = set()
         self._schedule_date = None
         self.hass.async_create_task(self._save_state())
         self.async_set_updated_data(self._build_data())
@@ -401,32 +415,34 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
     # ------------------------------------------------------------------
     # Day-ahead schedule
     # ------------------------------------------------------------------
-    def _build_daily_schedule(self) -> set[int]:
-        """Pick the cheapest N hours from today's full price list.
+    def _build_daily_schedule(self) -> tuple[set[int], set[int]]:
+        """Pick the cheapest hours from today's full price list into two speed tiers.
 
         Reads the ``today`` attribute from the configured price sensor — a list of
         24 floats (one per hour) published by Nordpool / Tibber integrations.
-        Returns a set of hours (0–23) during which the pump should run at HIGH RPM.
-        Returns an empty set if the attribute is unavailable; the caller falls back
-        to the reactive binary-sensor logic in that case.
 
-        Selection algorithm:
-        - Rank all 24 hours by ascending price.
-        - Pick the cheapest ``daily_hours_target`` hours.
-        - If fewer than target hours remain in the price list, take all of them
-          (must-run logic will handle the shortfall at end of day).
+        Returns (high_set, low_set):
+        - ``high_set``: cheapest ``daily_hours_target`` hours → HIGH RPM
+          (thorough filtration + heat pump during cheapest electricity)
+        - ``low_set``: next cheapest ``daily_low_hours_target`` hours → LOW RPM
+          (light circulation at moderate prices; no overlap with HIGH set)
+
+        Returns (set(), set()) when price data is unavailable; the caller falls
+        back to reactive binary-sensor logic in that case.
         """
-        target = self.daily_hours_target
-        if target <= 0:
-            return set()
+        high_target = self.daily_hours_target
+        low_target = self.daily_low_hours_target
+
+        if high_target <= 0 and low_target <= 0:
+            return set(), set()
 
         price_entity = self.cfg.get(CONF_SENSOR_PRICE)
         if not price_entity:
-            return set()
+            return set(), set()
 
         state = self.hass.states.get(price_entity)
         if not state:
-            return set()
+            return set(), set()
 
         today_prices: list | None = state.attributes.get("today")
         if not today_prices or len(today_prices) < 24:
@@ -435,21 +451,29 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
                 "falling back to reactive mode",
                 price_entity,
             )
-            return set()
+            return set(), set()
 
-        # Sort hours by price ascending and pick cheapest N
+        # Rank all 24 hours by price ascending
         ranked = sorted(range(24), key=lambda h: today_prices[h])
-        scheduled = set(ranked[:target])
 
-        prices_str = ", ".join(
-            f"{h:02d}:{today_prices[h]:.4f}" for h in sorted(scheduled)
-        )
+        # Tier 1: cheapest high_target hours → HIGH
+        high_set = set(ranked[:high_target])
+
+        # Tier 2: next low_target hours (not already in HIGH) → LOW
+        remaining = [h for h in ranked if h not in high_set]
+        low_set = set(remaining[:low_target])
+
+        def _hours_str(hours: set[int], prices: list) -> str:
+            return ", ".join(
+                f"{h:02d}h={prices[h]:.4f}" for h in sorted(hours)
+            )
+
         _LOGGER.info(
-            "Day-ahead schedule built: %d cheapest hours selected — %s",
-            len(scheduled),
-            prices_str,
+            "Day-ahead schedule built: HIGH %s | LOW %s",
+            _hours_str(high_set, today_prices),
+            _hours_str(low_set, today_prices) if low_set else "none",
         )
-        return scheduled
+        return high_set, low_set
 
     def _maybe_rebuild_schedule(self) -> bool:
         """Rebuild the day-ahead schedule if it is missing or stale.
@@ -461,13 +485,25 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         This is idempotent and cheap when the schedule is already current.
         """
         today = datetime.now().date().isoformat()
-        if self._schedule_date == today and self._daily_schedule:
-            return True  # already have today's schedule
+        targets_match = (
+            self._schedule_high_target == self.daily_hours_target
+            and self._schedule_low_target == self.daily_low_hours_target
+        )
+        # Return cached schedule when it's for today and targets haven't changed
+        if (
+            self._schedule_date == today
+            and (self._daily_schedule or self._daily_low_schedule)
+            and targets_match
+        ):
+            return True
 
-        new_schedule = self._build_daily_schedule()
-        if new_schedule:
-            self._daily_schedule = new_schedule
+        high_set, low_set = self._build_daily_schedule()
+        if high_set or low_set:
+            self._daily_schedule = high_set
+            self._daily_low_schedule = low_set
             self._schedule_date = today
+            self._schedule_high_target = self.daily_hours_target
+            self._schedule_low_target = self.daily_low_hours_target
             self.hass.async_create_task(self._save_state())
             return True
 
@@ -641,13 +677,18 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
 
         elif self._maybe_rebuild_schedule():
             # ── Day-ahead mode ──────────────────────────────────────────────
-            # Full 24-hour price list was available; the cheapest N hours were
-            # pre-selected at midnight. Just check membership.
+            # Full 24-hour price list available; cheapest N hours pre-selected
+            # for HIGH and next M hours for LOW at midnight. Check membership.
             if current_hour in self._daily_schedule:
                 _LOGGER.debug(
-                    "Hour %02d is in day-ahead schedule — running HIGH", current_hour
+                    "Hour %02d is in HIGH day-ahead schedule — running HIGH", current_hour
                 )
                 desired = MODE_HIGH
+            elif current_hour in self._daily_low_schedule:
+                _LOGGER.debug(
+                    "Hour %02d is in LOW day-ahead schedule — running LOW", current_hour
+                )
+                desired = MODE_LOW
             else:
                 _LOGGER.debug(
                     "Hour %02d not in day-ahead schedule — off", current_hour
@@ -970,8 +1011,9 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
                 < float(self.cfg.get(CONF_POOL_TEMP_HEATING_THRESHOLD, DEFAULT_POOL_TEMP_HEATING_THRESHOLD))
             ),
             # Day-ahead schedule info
-            "schedule_available": bool(self._daily_schedule),
-            "scheduled_hours": sorted(self._daily_schedule),
+            "schedule_available": bool(self._daily_schedule or self._daily_low_schedule),
+            "scheduled_high_hours": sorted(self._daily_schedule),
+            "scheduled_low_hours": sorted(self._daily_low_schedule),
         }
 
     async def _async_update_data(self) -> dict:

@@ -37,7 +37,9 @@ This means the pump always runs during the globally cheapest window for the day,
 
 If the price sensor does not expose a `today` attribute (e.g. some Tibber setups), the scheduler falls back to the reactive binary-sensor mode (best-price / peak-price signals) automatically.
 
-The active schedule is visible on the `sensor.pool_circulation_mode` entity as the `scheduled_hours` attribute — a list of the 24-hour clock hours (0–23) planned to run today.
+Two speed tiers are supported: the cheapest N hours run at HIGH RPM (thorough filtration + heat pump), and the next cheapest M hours run at LOW RPM (light circulation at moderate prices). M defaults to 0 — set it in the dashboard to add a baseline circulation layer between cheap and expensive windows.
+
+The active schedule is visible on the `sensor.pool_circulation_mode` entity as `scheduled_high_hours` and `scheduled_low_hours` attributes — lists of the 24-hour clock hours (0–23) planned for each tier today.
 
 ### Hourly evaluation
 
@@ -46,9 +48,10 @@ Every hour at HH:00, the coordinator re-evaluates and sets one of four modes:
 | Mode | Condition | Circulation | Heat pump | UV lamp |
 |---|---|---|---|---|
 | `low` | **Freeze protection** — outdoor temp ≤ freeze threshold | Low RPM ON | ON if pool cold | ON |
-| `high` | Current hour is in day-ahead schedule **or** extra filter active | High RPM switch ON | ON at best-price target temp | ON |
+| `high` | Current hour is in HIGH day-ahead tier **or** extra filter active | High RPM switch ON | ON at best-price target temp | ON |
+| `low` | Current hour is in LOW day-ahead tier (light circulation at moderate price) | Low RPM switch ON | ON at normal target temp if pool cold | ON |
 | `medium` | Schedule not available AND normal price AND hours still needed; **or** must-run override | Medium RPM switch ON | ON at normal target temp if pool cold | ON |
-| `off` | Hour not in schedule, daily target met, or **algae skip** | All switches OFF | OFF | OFF |
+| `off` | Hour not in any scheduled tier, daily target met, or **algae skip** | All switches OFF | OFF | OFF |
 
 **Priority order (highest → lowest):**
 1. **Freeze protection** — outdoor temp ≤ freeze threshold (default 2°C) → forces `low`, bypasses cooldown
@@ -149,7 +152,7 @@ Go to **Settings → Devices & Services → Pool Circulation → Configure** to 
 ### Sensors
 | Entity | Description |
 |---|---|
-| `sensor.pool_circulation_mode` | Current mode: `off` / `low` / `medium` / `high` — attributes include `too_cold`, `freeze_risk`, `in_cooldown`, `cooldown_remaining`, `in_min_on`, `min_on_remaining`, `extra_filter_active`, `uv_on`, temps, price, `schedule_available`, `scheduled_hours` (list of planned run hours 0–23) |
+| `sensor.pool_circulation_mode` | Current mode: `off` / `low` / `medium` / `high` — attributes include `too_cold`, `freeze_risk`, `in_cooldown`, `cooldown_remaining`, `in_min_on`, `min_on_remaining`, `extra_filter_active`, `uv_on`, temps, price, `schedule_available`, `scheduled_high_hours`, `scheduled_low_hours` |
 | `sensor.pool_circulation_rpm` | Current RPM (numeric) — reads actual RPM sensor if configured, otherwise derived from active switch; `0` when pump is off |
 | `sensor.pool_heat_pump_mode` | Current HVAC mode of the heat pump: `off` / `cool` / `heat` / `auto` |
 | `sensor.pool_heat_pump_current_temperature` | Temperature reading from the heat pump — attributes include target temp and fan mode |
@@ -169,7 +172,8 @@ Go to **Settings → Devices & Services → Pool Circulation → Configure** to 
 ### Numbers
 | Entity | Description |
 |---|---|
-| `number.pool_circulation_daily_hours` | Target circulation hours per day (editable in UI) |
+| `number.pool_circulation_daily_hours` | HIGH-RPM target hours per day — the cheapest N hours (editable in UI) |
+| `number.pool_circulation_daily_low_hours` | LOW-RPM target hours per day — next cheapest M hours after HIGH tier (0 = disabled, default 0) |
 | `number.pool_extra_filter_duration` | Duration of extra filter mode in minutes (editable in UI, default 60) |
 | `number.pool_pump_cooldown` | Minimum minutes between pump off → on (0 = disabled, default 10) |
 | `number.pool_pump_minimum_on_time` | Minimum minutes pump must stay on once started (0 = disabled, default 10) |
