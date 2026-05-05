@@ -267,6 +267,12 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
                 "Hourly tick: pump was on, hours_run_today=%d", self.hours_run_today
             )
 
+        # Persist the updated counter immediately so a crash or update between
+        # hourly ticks never loses more than the current partial hour.
+        # Without this, hours_run_today is only saved on mode changes — if the
+        # pump runs in steady HIGH all morning with no mode switch, a restart
+        # would reset the counter and could trigger must-run incorrectly.
+        self.hass.async_create_task(self._save_state())
         self.hass.async_create_task(self.async_evaluate_mode())
 
     @callback
@@ -664,14 +670,28 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         hours_left = 24 - current_hour
         hours_needed = max(0, self.daily_hours_target - self.hours_run_today)
 
-        # Must-run: only applies when pool is warm — on a cold day the pump sat idle
-        # because it was below threshold, not because scheduling failed, so we should
-        # not try to make up missed hours now that temp briefly crossed the threshold.
-        must_run = hours_needed > 0 and hours_needed >= hours_left
+        # How many schedule-tier hours remain from this hour onward (inclusive)?
+        # When the day-ahead schedule is available we subtract future scheduled
+        # hours from must-run's view of "hours needed", because those hours will
+        # be delivered by the normal schedule without any override. This prevents
+        # a stale/reset hours_run_today from triggering must-run unnecessarily —
+        # for example after a component update or HA restart mid-day.
+        schedule_built = bool(self._daily_schedule or self._daily_low_schedule)
+        future_scheduled = sum(
+            1 for h in range(current_hour, 24)
+            if h in self._daily_schedule or h in self._daily_low_schedule
+        ) if schedule_built else 0
+
+        # Must-run fires only when the schedule cannot cover the remaining gap.
+        # Effective_needed = gap that the schedule won't fill on its own.
+        effective_needed = max(0, hours_needed - future_scheduled)
+        must_run = effective_needed > 0 and effective_needed >= hours_left
 
         if must_run:
             _LOGGER.debug(
-                "Must-run override: need %d hours, %d left today", hours_needed, hours_left
+                "Must-run override: need %d hours, %d scheduled, %d effective gap, "
+                "%d left today",
+                hours_needed, future_scheduled, effective_needed, hours_left,
             )
             desired = MODE_MEDIUM
 
@@ -976,20 +996,27 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
     # ------------------------------------------------------------------
     def _build_data(self) -> dict:
         now = datetime.now()
-        hours_left = 24 - now.hour
+        current_hour = now.hour
+        hours_left = 24 - current_hour
         hours_needed = max(0, self.daily_hours_target - self.hours_run_today)
+        schedule_built = bool(self._daily_schedule or self._daily_low_schedule)
+        future_scheduled = sum(
+            1 for h in range(current_hour, 24)
+            if h in self._daily_schedule or h in self._daily_low_schedule
+        ) if schedule_built else 0
+        effective_needed = max(0, hours_needed - future_scheduled)
         return {
             "mode": self.current_mode,
             "automation_enabled": self.automation_enabled,
             "extra_filter_active": self.extra_filter_active,
             "hours_run_today": self.hours_run_today,
-            "hours_remaining": max(0, self.daily_hours_target - self.hours_run_today),
+            "hours_remaining": hours_needed,
             "daily_target": self.daily_hours_target,
             "price": self._state_float(CONF_SENSOR_PRICE),
             "price_level": self._state_str(CONF_SENSOR_PRICE_LEVEL),
             "is_best_price": self._state_is_on(CONF_BINARY_BEST_PRICE),
             "is_peak_price": self._state_is_on(CONF_BINARY_PEAK_PRICE),
-            "must_run": hours_needed > 0 and hours_needed >= hours_left,
+            "must_run": effective_needed > 0 and effective_needed >= hours_left,
             "too_cold": self._too_cold_to_circulate(),
             "scheduling_active": self._scheduling_active(),
             "freeze_risk": self._freeze_risk(),
