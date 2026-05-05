@@ -29,24 +29,37 @@ A Home Assistant custom component that automatically controls your pool circulat
 
 ## How It Works
 
-Every hour at HH:00, the coordinator evaluates price signals and sets one of four modes:
+### Day-ahead scheduling
+
+At the start of each day (midnight, or when HA first starts) the coordinator reads the `today` attribute from the configured price sensor — a list of 24 hourly prices published by Nordpool and most other integrations. It ranks all 24 hours by price and locks in the cheapest N hours as the run schedule for the day (N = daily hours target). Each hourly evaluation then simply checks whether the current hour is in the pre-planned schedule.
+
+This means the pump always runs during the globally cheapest window for the day, not just reactively when the current hour happens to be "best price". The must-run safety net at the end of the day becomes the exception rather than the rule.
+
+If the price sensor does not expose a `today` attribute (e.g. some Tibber setups), the scheduler falls back to the reactive binary-sensor mode (best-price / peak-price signals) automatically.
+
+The active schedule is visible on the `sensor.pool_circulation_mode` entity as the `scheduled_hours` attribute — a list of the 24-hour clock hours (0–23) planned to run today.
+
+### Hourly evaluation
+
+Every hour at HH:00, the coordinator re-evaluates and sets one of four modes:
 
 | Mode | Condition | Circulation | Heat pump | UV lamp |
 |---|---|---|---|---|
 | `low` | **Freeze protection** — outdoor temp ≤ freeze threshold | Low RPM ON | ON if pool cold | ON |
-| `high` | Best-price period active **or** extra filter active | High RPM switch ON | ON at best-price target temp | ON |
-| `medium` | Normal price, hours still needed | Medium RPM switch ON | ON at normal target temp if pool cold | ON |
-| `off` | Peak price, daily target met, or **algae skip** | All switches OFF | OFF | OFF |
+| `high` | Current hour is in day-ahead schedule **or** extra filter active | High RPM switch ON | ON at best-price target temp | ON |
+| `medium` | Schedule not available AND normal price AND hours still needed; **or** must-run override | Medium RPM switch ON | ON at normal target temp if pool cold | ON |
+| `off` | Hour not in schedule, daily target met, or **algae skip** | All switches OFF | OFF | OFF |
 
 **Priority order (highest → lowest):**
 1. **Freeze protection** — outdoor temp ≤ freeze threshold (default 2°C) → forces `low`, bypasses cooldown
 2. **Extra filter active** → forces `high` regardless of price or schedule, bypasses cooldown
 3. **Automation switch off** → holds current mode
-4. **Algae skip** — pool water temp below algae threshold (default 8°C) → `off`
-5. **Min-on** — pump started recently → holds current running mode instead of stopping (default 10 min)
-6. **Cooldown** — pump turned off recently → holds `off` until cooldown elapses (default 10 min)
-7. **Price logic** — peak → `off`, best → `high`, normal → `medium` if hours still needed
-8. **Must-run override** — hours needed ≥ hours left today → forces `medium` regardless of price
+4. **Min-on** — pump started recently → holds current running mode instead of stopping (default 10 min)
+5. **Algae skip** — pool water temp below algae threshold (default 8°C) → `off`, no scheduling
+6. **Must-run override** — hours needed ≥ hours left today → forces `medium` regardless of price
+7. **Day-ahead schedule** — current hour in pre-planned cheapest-N window → `high`; otherwise `off`
+8. **Reactive fallback** (no `today` prices) — peak → `off`, best → `high`, normal → `medium` if hours still needed
+9. **Cooldown** — pump turned off recently → holds `off` until cooldown elapses (default 10 min)
 
 ---
 
@@ -136,7 +149,7 @@ Go to **Settings → Devices & Services → Pool Circulation → Configure** to 
 ### Sensors
 | Entity | Description |
 |---|---|
-| `sensor.pool_circulation_mode` | Current mode: `off` / `low` / `medium` / `high` — attributes include `too_cold`, `freeze_risk`, `in_cooldown`, `cooldown_remaining`, `in_min_on`, `min_on_remaining`, `extra_filter_active`, `uv_on`, temps, price |
+| `sensor.pool_circulation_mode` | Current mode: `off` / `low` / `medium` / `high` — attributes include `too_cold`, `freeze_risk`, `in_cooldown`, `cooldown_remaining`, `in_min_on`, `min_on_remaining`, `extra_filter_active`, `uv_on`, temps, price, `schedule_available`, `scheduled_hours` (list of planned run hours 0–23) |
 | `sensor.pool_circulation_rpm` | Current RPM (numeric) — reads actual RPM sensor if configured, otherwise derived from active switch; `0` when pump is off |
 | `sensor.pool_heat_pump_mode` | Current HVAC mode of the heat pump: `off` / `cool` / `heat` / `auto` |
 | `sensor.pool_heat_pump_current_temperature` | Temperature reading from the heat pump — attributes include target temp and fan mode |

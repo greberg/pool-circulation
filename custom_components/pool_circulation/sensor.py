@@ -84,6 +84,8 @@ class PoolCirculationModeSensor(_SensorBase):
             "pool_temp": d.get("pool_temp"),
             "price": d.get("price"),
             "price_level": d.get("price_level"),
+            "schedule_available": d.get("schedule_available"),
+            "scheduled_hours": d.get("scheduled_hours"),
         }
 
 
