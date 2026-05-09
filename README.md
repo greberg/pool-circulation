@@ -53,12 +53,12 @@ Every hour at HH:00, the coordinator re-evaluates and sets one of four modes:
 |---|---|---|---|---|
 | `low` | **Freeze protection** — outdoor temp ≤ freeze threshold | Low RPM ON | ON if pool cold | ON |
 | `high` | Extra filter active (user-triggered only) | High RPM switch ON | ON at best-price target temp | ON |
-| `medium` | Current hour is in day-ahead MEDIUM tier (cheapest N hours) **or** must-run override | Medium RPM switch ON | ON at best-price target temp | ON |
-| `low` | Current hour is in day-ahead LOW tier (next cheapest M hours) **or** freeze protection | Low RPM switch ON | ON at normal target temp if pool cold | ON |
+| `medium` | Current hour is in day-ahead MEDIUM tier (cheapest N hours) **or** must-run override **or** freeze protection | Medium RPM switch ON | ON at best-price target temp | ON |
+| `low` | Current hour is in day-ahead LOW tier (next cheapest M hours) | Low RPM switch ON | ON at normal target temp if pool cold | ON |
 | `off` | Hour not in any scheduled tier, daily target met, or **algae skip** | All switches OFF | OFF | OFF |
 
 **Priority order (highest → lowest):**
-1. **Freeze protection** — outdoor temp ≤ freeze threshold (default 2°C) → forces `low`, bypasses cooldown
+1. **Freeze protection** — outdoor temp ≤ freeze threshold (default 2°C) → forces `medium`, bypasses cooldown
 2. **Extra filter active** → forces `high` (only time HIGH is used), bypasses cooldown
 3. **Automation switch off** → holds current mode
 4. **Min-on** — pump started recently → holds current running mode instead of stopping (default 10 min)

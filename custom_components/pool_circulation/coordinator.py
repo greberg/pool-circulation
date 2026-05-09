@@ -627,7 +627,7 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         - OFF    : peak price / outside schedule / algae skip
 
         Priority (highest → lowest):
-        1. Freeze protection — outdoor temp ≤ freeze threshold → LOW (bypasses both timers)
+        1. Freeze protection — outdoor temp ≤ freeze threshold → MEDIUM (bypasses both timers)
         2. Extra filter active → HIGH (bypasses both timers — user explicitly triggered)
         3. Automation disabled → hold current mode
         4. Min-on — pump started recently → hold current running mode (blocks algae skip,
@@ -641,7 +641,7 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         """
         # 1. Freeze protection overrides everything — safety critical, bypasses timers
         if self._freeze_risk():
-            return MODE_LOW
+            return MODE_MEDIUM
 
         # 2. Extra filter forces high RPM — user intentionally triggered, bypasses timers
         if self.extra_filter_active:
