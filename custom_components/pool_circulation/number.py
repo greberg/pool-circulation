@@ -57,7 +57,13 @@ async def async_setup_entry(
 
 
 class PoolDailyHoursNumber(CoordinatorEntity, NumberEntity):
-    """Editable target for daily circulation hours."""
+    """Target hours per day to run the pump at MEDIUM RPM.
+
+    The day-ahead scheduler selects the cheapest N hours from the 24-hour
+    price list and runs the pump at MEDIUM speed during those hours —
+    thorough filtration + heat pump at best-price target temperature.
+    HIGH speed is reserved for the extra-filter switch only.
+    """
 
     def __init__(self, coordinator: PoolCirculationCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator)
@@ -85,10 +91,11 @@ class PoolDailyHoursNumber(CoordinatorEntity, NumberEntity):
 class PoolDailyLowHoursNumber(CoordinatorEntity, NumberEntity):
     """Additional LOW-RPM hours to schedule per day.
 
-    After the HIGH-RPM hours are filled with the cheapest electricity, the next
-    cheapest ``low_hours`` are scheduled at LOW RPM — light circulation that still
-    keeps the water moving and does some filtration without the energy draw of
-    medium / high speed. Set to 0 to disable LOW-tier scheduling entirely.
+    After the MEDIUM-RPM hours are filled with the cheapest electricity, the
+    next cheapest ``low_hours`` are scheduled at LOW RPM — light background
+    circulation outside the main filtration window. Keeps water moving at
+    minimal energy cost. Set to 0 to disable LOW-tier scheduling entirely.
+    These hours are always separate from (and never overlap) the daily MEDIUM hours.
     """
 
     def __init__(self, coordinator: PoolCirculationCoordinator, entry: ConfigEntry) -> None:

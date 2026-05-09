@@ -37,7 +37,11 @@ This means the pump always runs during the globally cheapest window for the day,
 
 If the price sensor does not expose a `today` attribute (e.g. some Tibber setups), the scheduler falls back to the reactive binary-sensor mode (best-price / peak-price signals) automatically.
 
-Two speed tiers are supported: the cheapest N hours run at HIGH RPM (thorough filtration + heat pump), and the next cheapest M hours run at LOW RPM (light circulation at moderate prices). M defaults to 0 — set it in the dashboard to add a baseline circulation layer between cheap and expensive windows.
+Two speed tiers are supported:
+- **MEDIUM** (daily target hours): the cheapest N hours from the full day are selected and the pump runs at medium speed — thorough filtration with the heat pump active at best-price target temperature.
+- **LOW** (optional background hours): the next cheapest M hours (outside the MEDIUM set) run at low speed — light background trickle at moderate prices. M defaults to 0; set it in the dashboard to add continuous light circulation around the main filtration window.
+
+HIGH speed is reserved exclusively for the **extra filter switch** (user-triggered intensive filtration).
 
 The active schedule is visible on the `sensor.pool_circulation_mode` entity as `scheduled_high_hours` and `scheduled_low_hours` attributes — lists of the 24-hour clock hours (0–23) planned for each tier today.
 
@@ -48,20 +52,20 @@ Every hour at HH:00, the coordinator re-evaluates and sets one of four modes:
 | Mode | Condition | Circulation | Heat pump | UV lamp |
 |---|---|---|---|---|
 | `low` | **Freeze protection** — outdoor temp ≤ freeze threshold | Low RPM ON | ON if pool cold | ON |
-| `high` | Current hour is in HIGH day-ahead tier **or** extra filter active | High RPM switch ON | ON at best-price target temp | ON |
-| `low` | Current hour is in LOW day-ahead tier (light circulation at moderate price) | Low RPM switch ON | ON at normal target temp if pool cold | ON |
-| `medium` | Schedule not available AND normal price AND hours still needed; **or** must-run override | Medium RPM switch ON | ON at normal target temp if pool cold | ON |
+| `high` | Extra filter active (user-triggered only) | High RPM switch ON | ON at best-price target temp | ON |
+| `medium` | Current hour is in day-ahead MEDIUM tier (cheapest N hours) **or** must-run override | Medium RPM switch ON | ON at best-price target temp | ON |
+| `low` | Current hour is in day-ahead LOW tier (next cheapest M hours) **or** freeze protection | Low RPM switch ON | ON at normal target temp if pool cold | ON |
 | `off` | Hour not in any scheduled tier, daily target met, or **algae skip** | All switches OFF | OFF | OFF |
 
 **Priority order (highest → lowest):**
 1. **Freeze protection** — outdoor temp ≤ freeze threshold (default 2°C) → forces `low`, bypasses cooldown
-2. **Extra filter active** → forces `high` regardless of price or schedule, bypasses cooldown
+2. **Extra filter active** → forces `high` (only time HIGH is used), bypasses cooldown
 3. **Automation switch off** → holds current mode
 4. **Min-on** — pump started recently → holds current running mode instead of stopping (default 10 min)
 5. **Algae skip** — pool water temp below algae threshold (default 8°C) → `off`, no scheduling
-6. **Must-run override** — hours needed ≥ hours left today → forces `medium` regardless of price
-7. **Day-ahead schedule** — current hour in pre-planned cheapest-N window → `high`; otherwise `off`
-8. **Reactive fallback** (no `today` prices) — peak → `off`, best → `high`, normal → `medium` if hours still needed
+6. **Must-run override** — schedule gap cannot cover remaining hours → forces `medium`
+7. **Day-ahead schedule** — cheapest N hours → `medium`; next cheapest M hours → `low`; otherwise `off`
+8. **Reactive fallback** (no `today` prices) — best-price → `medium`, normal → `medium`/`low`, peak → `off`
 9. **Cooldown** — pump turned off recently → holds `off` until cooldown elapses (default 10 min)
 
 ---
@@ -172,8 +176,8 @@ Go to **Settings → Devices & Services → Pool Circulation → Configure** to 
 ### Numbers
 | Entity | Description |
 |---|---|
-| `number.pool_circulation_daily_hours` | HIGH-RPM target hours per day — the cheapest N hours (editable in UI) |
-| `number.pool_circulation_daily_low_hours` | LOW-RPM target hours per day — next cheapest M hours after HIGH tier (0 = disabled, default 0) |
+| `number.pool_circulation_daily_hours` | MEDIUM-RPM target hours per day — the cheapest N hours get full filtration + heat pump (editable in UI) |
+| `number.pool_circulation_daily_low_hours` | LOW-RPM target hours per day — next cheapest M hours outside the MEDIUM window (0 = disabled, default 0) |
 | `number.pool_extra_filter_duration` | Duration of extra filter mode in minutes (editable in UI, default 60) |
 | `number.pool_pump_cooldown` | Minimum minutes between pump off → on (0 = disabled, default 10) |
 | `number.pool_pump_minimum_on_time` | Minimum minutes pump must stay on once started (0 = disabled, default 10) |

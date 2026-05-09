@@ -620,6 +620,12 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
     def _decide_mode(self) -> str:
         """Determine the target mode from current signals and state.
 
+        Speed mapping:
+        - HIGH   : extra filter only (user-triggered) — intensive filtration
+        - MEDIUM : scheduled cheap hours (daily_hours target) — normal daily run
+        - LOW    : background trickle (daily_low_hours) or freeze protection
+        - OFF    : peak price / outside schedule / algae skip
+
         Priority (highest → lowest):
         1. Freeze protection — outdoor temp ≤ freeze threshold → LOW (bypasses both timers)
         2. Extra filter active → HIGH (bypasses both timers — user explicitly triggered)
@@ -628,8 +634,10 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
            peak price, and any other reason to stop — pump must run its minimum time)
         5. Pool temperature gate — pool below algae threshold → OFF, no scheduling
            (price optimisation and daily hours only apply when pool is warm enough)
-        6. Price logic + must-run override (only reached when pool is warm)
-        7. Cooldown — pump was recently turned off → hold OFF
+        6. Must-run override — schedule gap cannot cover remaining hours → MEDIUM
+        7. Day-ahead schedule — current hour in MEDIUM tier → MEDIUM, LOW tier → LOW
+        8. Reactive fallback (no 'today' prices) — best → MEDIUM, normal → MEDIUM/LOW, peak → OFF
+        9. Cooldown — pump was recently turned off → hold OFF
         """
         # 1. Freeze protection overrides everything — safety critical, bypasses timers
         if self._freeze_risk():
@@ -697,13 +705,17 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
 
         elif self._maybe_rebuild_schedule():
             # ── Day-ahead mode ──────────────────────────────────────────────
-            # Full 24-hour price list available; cheapest N hours pre-selected
-            # for HIGH and next M hours for LOW at midnight. Check membership.
+            # Full 24-hour price list available.
+            # Cheapest N hours (daily_hours) → MEDIUM: proper daily circulation.
+            # Next M hours (daily_low_hours) → LOW: light background trickle.
+            # Everything else → OFF.
+            # HIGH is reserved exclusively for the extra-filter switch.
             if current_hour in self._daily_schedule:
                 _LOGGER.debug(
-                    "Hour %02d is in HIGH day-ahead schedule — running HIGH", current_hour
+                    "Hour %02d is in MEDIUM day-ahead schedule — running MEDIUM",
+                    current_hour,
                 )
-                desired = MODE_HIGH
+                desired = MODE_MEDIUM
             elif current_hour in self._daily_low_schedule:
                 _LOGGER.debug(
                     "Hour %02d is in LOW day-ahead schedule — running LOW", current_hour
@@ -719,9 +731,12 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             # ── Reactive fallback ────────────────────────────────────────────
             # Price sensor does not expose a 'today' attribute (e.g. Tibber,
             # or Nordpool before midnight publication). Fall back to the binary
-            # best-price / peak-price sensors, same as before.
+            # best-price / peak-price sensors.
+            # best-price → MEDIUM (daily target hours), normal → LOW if still
+            # needed, peak → OFF.
             is_peak = self._state_is_on(CONF_BINARY_PEAK_PRICE)
             is_best = self._state_is_on(CONF_BINARY_BEST_PRICE)
+            low_hours_target = self.daily_low_hours_target
             _LOGGER.debug(
                 "Reactive mode: is_best=%s is_peak=%s hours_needed=%d",
                 is_best, is_peak, hours_needed,
@@ -729,9 +744,12 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             if is_peak:
                 desired = MODE_OFF
             elif is_best:
-                desired = MODE_HIGH
+                desired = MODE_MEDIUM
             elif hours_needed > 0:
                 desired = MODE_MEDIUM
+            elif low_hours_target > 0:
+                # Daily MEDIUM target met but LOW background still desired
+                desired = MODE_LOW
             else:
                 desired = MODE_OFF
 
@@ -824,10 +842,13 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         """Set heat pump state and target temperature based on mode and pool temp.
 
         Rules:
-        - MODE_HIGH (best price): turn ON at best-price target temp
-        - MODE_MEDIUM / MODE_LOW: turn ON at normal target temp IF pool is below
-          the heating threshold (pool is getting cold and needs heating)
-        - MODE_OFF: turn OFF (no circulation = no point heating)
+        - MODE_MEDIUM (scheduled cheap hours): always ON at best-price target temp.
+          This is the normal daily run during the cheapest electricity window.
+        - MODE_HIGH (extra filter, user-triggered): also ON at best-price target
+          temp — user intentionally requested intensive filtration so keep heating.
+        - MODE_LOW (background trickle or freeze): ON at normal target temp ONLY
+          if pool temp is below the heating threshold (pool getting cold).
+        - MODE_OFF: turn OFF (no circulation = no point heating).
         """
         hp = self.cfg.get(CONF_CLIMATE_HEAT_PUMP)
         if not hp:
@@ -842,10 +863,15 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         pool_temp = self._state_float(CONF_SENSOR_POOL_TEMP)
         pool_cold = pool_temp is not None and pool_temp < heating_threshold
 
-        if mode == MODE_HIGH:
+        if mode in (MODE_MEDIUM, MODE_HIGH):
+            # MEDIUM = scheduled cheap hours (daily target)
+            # HIGH   = extra filter (user-triggered intensive run)
+            # Both warrant full heat pump at best-price target temp.
             target_temp = best_price_temp
             hp_on = True
-        elif mode in (MODE_MEDIUM, MODE_LOW) and pool_cold:
+        elif mode == MODE_LOW and pool_cold:
+            # LOW = background trickle or freeze protection.
+            # Only heat when pool is actually getting cold.
             target_temp = normal_temp
             hp_on = True
         else:
