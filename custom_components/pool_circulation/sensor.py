@@ -100,7 +100,9 @@ class PoolCirculationScheduleSensor(_SensorBase):
     "01:00,02:00,06:00,14:00,15:00,22:00,23:00"
     Matches the old sensor.pool_pump_schedule format so existing templates
     that call .split(',') continue to work unchanged.
-    State is 'unavailable' when no price data is available yet.
+    State is "reactive" when the price sensor has no 24-hour price list —
+    the component still works via the best-price/peak-price binary sensors
+    but cannot show a day-ahead schedule.
     """
 
     def __init__(self, coordinator, entry):
@@ -111,7 +113,8 @@ class PoolCirculationScheduleSensor(_SensorBase):
     def native_value(self):
         d = self._data
         if not d.get("schedule_available"):
-            return None
+            # Sensor is functional (reactive binary-sensor mode) but no day-ahead list
+            return "reactive"
         return d.get("scheduled_medium_str", "")
 
     @property
