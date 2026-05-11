@@ -712,12 +712,13 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         3. Automation disabled → hold current mode
         4. Min-on — pump started recently → hold current running mode (blocks algae skip,
            peak price, and any other reason to stop — pump must run its minimum time)
-        5. Pool temperature gate — pool below algae threshold → OFF, no scheduling
-           (price optimisation and daily hours only apply when pool is warm enough)
+        5. Pool temperature gate — pool below algae threshold:
+             outdoor in buffer zone → LOW; otherwise → OFF (no scheduling)
         6. Must-run override — schedule gap cannot cover remaining hours → MEDIUM
         7. Day-ahead schedule — current hour in MEDIUM tier → MEDIUM, LOW tier → LOW
         8. Reactive fallback (no 'today' prices) — best → MEDIUM, normal → MEDIUM/LOW, peak → OFF
-        9. Cooldown — pump was recently turned off → hold OFF
+        9. Cooldown — pump was recently turned off → temporarily hold OFF
+       10. Minimum LOW — pool warm (above algae threshold) → never OFF, always at least LOW
         """
         # 1. Freeze protection overrides everything — safety critical, bypasses timers
         if self._freeze_risk():
@@ -842,13 +843,26 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             else:
                 desired = MODE_OFF
 
-        # 7. Cooldown — don't turn on if pump was recently switched off
+        # 7. Cooldown — don't turn on if pump was recently switched off.
+        #    Only applies when going from OFF → ON; ignored when pool forces minimum LOW.
         if desired != MODE_OFF and self.current_mode == MODE_OFF and self._in_cooldown():
             remaining = self._cooldown_remaining_seconds()
             _LOGGER.debug(
                 "Cooldown active: holding pump off for %d more seconds", remaining
             )
-            return MODE_OFF
+            desired = MODE_OFF
+
+        # 8. Minimum LOW override — when pool temp is above the algae threshold the
+        #    pump must always circulate at least at LOW speed to keep the water clean
+        #    and prevent stagnation.  This overrides peak price, cooldown, and every
+        #    other reason to stop completely.  Only bypassed by:
+        #      • automation disabled (step 3 returns early)
+        #      • pool cold / algae skip (step 5 returns early)
+        if desired == MODE_OFF and self._scheduling_active():
+            _LOGGER.debug(
+                "Pool warm: minimum LOW applied — pump never fully off above algae threshold"
+            )
+            desired = MODE_LOW
 
         return desired
 
@@ -1158,6 +1172,13 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             "schedule_available": bool(self._daily_schedule or self._daily_low_schedule),
             "scheduled_high_hours": sorted(self._daily_schedule),
             "scheduled_low_hours": sorted(self._daily_low_schedule),
+            # Comma-separated HH:00 string — matches old sensor.pool_pump_schedule format
+            "scheduled_medium_str": ",".join(
+                f"{h:02d}:00" for h in sorted(self._daily_schedule)
+            ),
+            "scheduled_low_str": ",".join(
+                f"{h:02d}:00" for h in sorted(self._daily_low_schedule)
+            ),
         }
 
     async def _async_update_data(self) -> dict:

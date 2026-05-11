@@ -28,6 +28,7 @@ async def async_setup_entry(
         [
             PoolCirculationModeSensor(coordinator, entry),
             PoolCirculationRpmSensor(coordinator, entry),
+            PoolCirculationScheduleSensor(coordinator, entry),
             PoolCirculationHoursTodaySensor(coordinator, entry),
             PoolCirculationHoursLowTodaySensor(coordinator, entry),
             PoolCirculationHoursRemainingSensor(coordinator, entry),
@@ -89,6 +90,38 @@ class PoolCirculationModeSensor(_SensorBase):
             "schedule_available": d.get("schedule_available"),
             "scheduled_high_hours": d.get("scheduled_high_hours"),
             "scheduled_low_hours": d.get("scheduled_low_hours"),
+        }
+
+
+class PoolCirculationScheduleSensor(_SensorBase):
+    """Today's day-ahead schedule — cheapest MEDIUM hours.
+
+    State: comma-separated HH:00 list of scheduled MEDIUM hours, e.g.
+    "01:00,02:00,06:00,14:00,15:00,22:00,23:00"
+    Matches the old sensor.pool_pump_schedule format so existing templates
+    that call .split(',') continue to work unchanged.
+    State is 'unavailable' when no price data is available yet.
+    """
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry, "schedule", "Pool Circulation Schedule")
+        self._attr_icon = "mdi:calendar-clock"
+
+    @property
+    def native_value(self):
+        d = self._data
+        if not d.get("schedule_available"):
+            return None
+        return d.get("scheduled_medium_str", "")
+
+    @property
+    def extra_state_attributes(self):
+        d = self._data
+        return {
+            "medium_hours": d.get("scheduled_high_hours", []),
+            "low_hours": d.get("scheduled_low_hours", []),
+            "low_schedule": d.get("scheduled_low_str", ""),
+            "schedule_available": d.get("schedule_available", False),
         }
 
 
