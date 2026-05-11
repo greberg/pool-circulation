@@ -16,6 +16,7 @@ from .const import (
     CONF_HP_TEMP_NORMAL,
     CONF_MIN_ON_MINUTES,
     CONF_POOL_TEMP_HEATING_THRESHOLD,
+    CONF_TEMP_OUTDOOR_BUFFER,
     DEFAULT_COOLDOWN_MINUTES,
     DEFAULT_DAILY_HOURS,
     DEFAULT_DAILY_LOW_HOURS,
@@ -24,6 +25,7 @@ from .const import (
     DEFAULT_HP_TEMP_NORMAL,
     DEFAULT_MIN_ON_MINUTES,
     DEFAULT_POOL_TEMP_HEATING_THRESHOLD,
+    DEFAULT_TEMP_OUTDOOR_BUFFER,
     DOMAIN,
 )
 from .coordinator import PoolCirculationCoordinator
@@ -52,6 +54,7 @@ async def async_setup_entry(
             PoolHpTempBestPriceNumber(coordinator, entry),
             PoolHpTempNormalNumber(coordinator, entry),
             PoolPoolHeatingThresholdNumber(coordinator, entry),
+            PoolOutdoorBufferNumber(coordinator, entry),
         ]
     )
 
@@ -284,4 +287,37 @@ class PoolPoolHeatingThresholdNumber(CoordinatorEntity, NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         new_options = {**self._entry.options, CONF_POOL_TEMP_HEATING_THRESHOLD: value}
+        self.hass.config_entries.async_update_entry(self._entry, options=new_options)
+
+
+class PoolOutdoorBufferNumber(CoordinatorEntity, NumberEntity):
+    """Outdoor temperature below which algae-skip is suppressed (cold-buffer zone).
+
+    When outdoor temp is between the freeze threshold and this value the pump keeps
+    running at LOW even if pool water is below the algae threshold — safer than
+    stopping in marginal conditions. Matches the old automation behaviour that only
+    stopped the pump when outdoor temp was above 4°C.
+    Set equal to the freeze threshold to disable the buffer entirely.
+    """
+
+    def __init__(self, coordinator: PoolCirculationCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._attr_name = "Pool Outdoor Buffer Temperature"
+        self._attr_unique_id = f"{entry.entry_id}_outdoor_buffer_temp"
+        self._attr_icon = "mdi:thermometer-alert"
+        self._attr_native_min_value = 0.0
+        self._attr_native_max_value = 10.0
+        self._attr_native_step = 0.5
+        self._attr_native_unit_of_measurement = "°C"
+        self._attr_mode = NumberMode.BOX
+        self._attr_device_info = _DEVICE_INFO(entry)
+
+    @property
+    def native_value(self) -> float:
+        cfg = {**self._entry.data, **self._entry.options}
+        return cfg.get(CONF_TEMP_OUTDOOR_BUFFER, DEFAULT_TEMP_OUTDOOR_BUFFER)
+
+    async def async_set_native_value(self, value: float) -> None:
+        new_options = {**self._entry.options, CONF_TEMP_OUTDOOR_BUFFER: value}
         self.hass.config_entries.async_update_entry(self._entry, options=new_options)

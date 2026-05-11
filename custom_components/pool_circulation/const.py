@@ -23,6 +23,7 @@ CONF_SENSOR_OUTDOOR_TEMP = "sensor_outdoor_temp"
 CONF_SENSOR_POOL_TEMP = "sensor_pool_temp"
 CONF_TEMP_ALGAE_THRESHOLD = "temp_algae_threshold"
 CONF_TEMP_FREEZE_THRESHOLD = "temp_freeze_threshold"
+CONF_TEMP_OUTDOOR_BUFFER = "temp_outdoor_buffer"   # outdoor ≤ this → algae skip suppressed
 CONF_HP_TEMP_BEST_PRICE = "hp_temp_best_price"
 CONF_HP_TEMP_NORMAL = "hp_temp_normal"
 CONF_POOL_TEMP_HEATING_THRESHOLD = "pool_temp_heating_threshold"
@@ -41,6 +42,7 @@ DEFAULT_DAILY_HOURS = 8
 DEFAULT_DAILY_LOW_HOURS = 0       # additional LOW-RPM hours per day (0 = disabled)
 DEFAULT_TEMP_ALGAE_THRESHOLD = 8.0        # °C — algae don't grow below this
 DEFAULT_TEMP_FREEZE_THRESHOLD = 2.0       # °C — circulate to prevent freezing
+DEFAULT_TEMP_OUTDOOR_BUFFER = 4.0         # °C — keep pump at LOW below this even if pool is cold
 DEFAULT_HP_TEMP_BEST_PRICE = 31.0         # °C — heat pump target during best price hours
 DEFAULT_HP_TEMP_NORMAL = 30.0             # °C — heat pump target during normal hours
 DEFAULT_POOL_TEMP_HEATING_THRESHOLD = 29.0  # °C — turn on heat pump if pool drops below this

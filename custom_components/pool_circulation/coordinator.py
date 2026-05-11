@@ -41,6 +41,7 @@ from .const import (
     CONF_SWITCH_RPM_MEDIUM,
     CONF_TEMP_ALGAE_THRESHOLD,
     CONF_TEMP_FREEZE_THRESHOLD,
+    CONF_TEMP_OUTDOOR_BUFFER,
     CONF_HP_TEMP_BEST_PRICE,
     CONF_HP_TEMP_NORMAL,
     CONF_POOL_TEMP_HEATING_THRESHOLD,
@@ -58,6 +59,7 @@ from .const import (
     DEFAULT_RPM_MEDIUM,
     DEFAULT_TEMP_ALGAE_THRESHOLD,
     DEFAULT_TEMP_FREEZE_THRESHOLD,
+    DEFAULT_TEMP_OUTDOOR_BUFFER,
     DOMAIN,
     EVENT_EXTRA_FILTER_CHANGED,
     EVENT_MODE_CHANGED,
@@ -89,7 +91,8 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
 
         self.automation_enabled: bool = True
         self.current_mode: str = MODE_OFF
-        self.hours_run_today: int = 0
+        self.hours_run_today: int = 0      # MEDIUM + HIGH hours (counts toward daily_hours target)
+        self.hours_low_today: int = 0      # LOW-only hours (background trickle)
         self._last_run_hour: int | None = None
 
         # Extra filter state — not persisted (resets on HA restart)
@@ -114,9 +117,10 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         self._schedule_high_target: int = -1
         self._schedule_low_target: int = -1
 
-        # Temperature sensor state-change subscriptions (managed separately
-        # so they can be refreshed when options change entity IDs)
+        # Temperature + price binary sensor state-change subscriptions (managed
+        # separately so they can be refreshed when options change entity IDs)
         self._temp_watcher_unsubs: list[Any] = []
+        self._price_watcher_unsubs: list[Any] = []
 
     # ------------------------------------------------------------------
     # Config helpers
@@ -165,10 +169,10 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             )
         )
 
-        # Re-evaluate immediately when temperature sensors change state.
-        # This ensures algae skip and freeze protection react in real time
+        # Re-evaluate immediately when temperature or price sensors change state
         # instead of waiting up to 59 minutes for the next hourly tick.
         self._register_temp_watchers()
+        self._register_price_watchers()
 
         # Defer the initial mode evaluation until HA is fully started so that
         # device integrations (e.g. heat pump) have finished their own setup.
@@ -193,6 +197,9 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         for unsub in self._temp_watcher_unsubs:
             unsub()
         self._temp_watcher_unsubs.clear()
+        for unsub in self._price_watcher_unsubs:
+            unsub()
+        self._price_watcher_unsubs.clear()
 
     # ------------------------------------------------------------------
     # Persistence
@@ -202,6 +209,7 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         today = datetime.now().date().isoformat()
         if stored.get("date") == today:
             self.hours_run_today = stored.get("hours_run_today", 0)
+            self.hours_low_today = stored.get("hours_low_today", 0)
             # Restore day-ahead schedule only when it was built for today
             raw_high = stored.get("daily_schedule")
             raw_low = stored.get("daily_low_schedule")
@@ -215,6 +223,7 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
                 )
         else:
             self.hours_run_today = 0
+            self.hours_low_today = 0
             self._daily_schedule = set()
             self._daily_low_schedule = set()
             self._schedule_date = None
@@ -236,6 +245,7 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             {
                 "date": datetime.now().date().isoformat(),
                 "hours_run_today": self.hours_run_today,
+                "hours_low_today": self.hours_low_today,
                 "current_mode": self.current_mode,
                 "automation_enabled": self.automation_enabled,
                 "last_turned_off": (
@@ -261,10 +271,13 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
     @callback
     def _hourly_tick(self, now: datetime) -> None:
         """Called at HH:00:05 — account for the previous hour then re-evaluate."""
-        if self.current_mode != MODE_OFF:
+        if self.current_mode == MODE_LOW:
+            self.hours_low_today += 1
+            _LOGGER.debug("Hourly tick: LOW mode, hours_low_today=%d", self.hours_low_today)
+        elif self.current_mode in (MODE_MEDIUM, MODE_HIGH):
             self.hours_run_today += 1
             _LOGGER.debug(
-                "Hourly tick: pump was on, hours_run_today=%d", self.hours_run_today
+                "Hourly tick: %s mode, hours_run_today=%d", self.current_mode, self.hours_run_today
             )
 
         # Persist the updated counter immediately so a crash or update between
@@ -283,6 +296,7 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             self.hours_run_today,
         )
         self.hours_run_today = 0
+        self.hours_low_today = 0
         # Clear schedule so it gets rebuilt for the new day on the next evaluation.
         # Nordpool refreshes today's prices at midnight so the rebuild will have
         # the correct 24-hour price list for the new day.
@@ -301,7 +315,6 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         Called once during setup and again whenever options change (the sensor
         entity IDs might have been edited). Old subscriptions are replaced.
         """
-        # Remove any previously registered temp watchers before re-registering
         for unsub in list(self._temp_watcher_unsubs):
             unsub()
         self._temp_watcher_unsubs.clear()
@@ -316,6 +329,52 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
                 )
                 self._temp_watcher_unsubs.append(unsub)
                 _LOGGER.debug("Watching temperature sensor: %s", entity_id)
+
+    def _register_price_watchers(self) -> None:
+        """Subscribe to best-price and peak-price binary sensor changes.
+
+        The old automations fired immediately when the price window changed
+        (e.g. best-price turned off → switch back to LOW). Without this the
+        component would wait up to 55 min for the next hourly tick.
+        """
+        for unsub in list(self._price_watcher_unsubs):
+            unsub()
+        self._price_watcher_unsubs.clear()
+
+        for conf_key in (CONF_BINARY_BEST_PRICE, CONF_BINARY_PEAK_PRICE):
+            entity_id = self.cfg.get(conf_key)
+            if entity_id:
+                unsub = async_track_state_change_event(
+                    self.hass,
+                    [entity_id],
+                    self._on_price_changed,
+                )
+                self._price_watcher_unsubs.append(unsub)
+                _LOGGER.debug("Watching price binary sensor: %s", entity_id)
+
+    @callback
+    def _on_price_changed(self, event) -> None:
+        """Re-evaluate mode immediately when a price binary sensor changes state.
+
+        Handles transitions like best-price window opening/closing or peak-price
+        starting/ending without waiting for the next hourly tick.
+        Only acts when the value actually changed to on/off (not unavailable).
+        """
+        new_state = event.data.get("new_state")
+        old_state = event.data.get("old_state")
+        if new_state is None:
+            return
+        if new_state.state not in ("on", "off"):
+            return
+        if old_state and new_state.state == old_state.state:
+            return
+        _LOGGER.debug(
+            "Price binary sensor %s changed: %s → %s — re-evaluating mode",
+            new_state.entity_id,
+            old_state.state if old_state else "?",
+            new_state.state,
+        )
+        self.hass.async_create_task(self.async_evaluate_mode())
 
     @callback
     def _on_temp_changed(self, event) -> None:
@@ -559,6 +618,27 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
 
         return False
 
+    def _outdoor_buffer_active(self) -> bool:
+        """Return True when outdoor temp is in the cold-buffer zone.
+
+        This is the range between the freeze threshold and the algae-stop cutoff
+        (default 2°C–4°C). In this zone the pool is cold (below algae threshold)
+        but outdoor conditions are borderline — it's safer to keep the pump at
+        LOW than to stop it entirely, even though algae skip would normally fire.
+
+        Mirrors the old automation behaviour:
+          'Cirkulationspump off pooltemp under 9 and temp over 4'
+        which required outdoor > 4°C before stopping the pump on a cold pool.
+        """
+        outdoor = self._state_float(CONF_SENSOR_OUTDOOR_TEMP)
+        if outdoor is None:
+            return False
+        freeze = float(self.cfg.get(CONF_TEMP_FREEZE_THRESHOLD, DEFAULT_TEMP_FREEZE_THRESHOLD))
+        buffer = float(self.cfg.get(CONF_TEMP_OUTDOOR_BUFFER, DEFAULT_TEMP_OUTDOOR_BUFFER))
+        # Active when outdoor is above the freeze threshold (freeze protection handles
+        # anything colder) but at or below the algae-stop cutoff.
+        return freeze < outdoor <= buffer
+
     def _in_cooldown(self) -> bool:
         """Return True if the pump is within the cooldown window after turning off.
 
@@ -663,9 +743,18 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
 
         # 5. Pool temperature gate — price and daily hours only apply when the pool
         #    is warm enough for algae growth (above the algae threshold).
-        #    Below that temperature the pump should stay off entirely — there is no
-        #    biological reason to circulate and no energy benefit in price optimisation.
+        #    Exception: when outdoor temp is in the cold-buffer zone (between freeze
+        #    threshold and buffer cutoff, default 2–4°C) keep the pump at LOW even
+        #    though the pool is cold — safer than stopping in marginal conditions.
+        #    This mirrors the old automation that only stopped the pump when outdoor
+        #    temp was above 4°C, so the pump kept running when outdoor was 2–4°C.
         if not self._scheduling_active():
+            if self._outdoor_buffer_active():
+                _LOGGER.debug(
+                    "Pool cold but outdoor in buffer zone (%.1f°C) — holding at LOW",
+                    self._state_float(CONF_SENSOR_OUTDOOR_TEMP) or 0.0,
+                )
+                return MODE_LOW
             _LOGGER.debug(
                 "Scheduling inactive: pool too cold (threshold %.1f°C) — pump off",
                 float(self.cfg.get(CONF_TEMP_ALGAE_THRESHOLD, DEFAULT_TEMP_ALGAE_THRESHOLD)),
@@ -1036,6 +1125,7 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             "automation_enabled": self.automation_enabled,
             "extra_filter_active": self.extra_filter_active,
             "hours_run_today": self.hours_run_today,
+            "hours_low_today": self.hours_low_today,
             "hours_remaining": hours_needed,
             "daily_target": self.daily_hours_target,
             "price": self._state_float(CONF_SENSOR_PRICE),
@@ -1044,6 +1134,7 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             "is_peak_price": self._state_is_on(CONF_BINARY_PEAK_PRICE),
             "must_run": effective_needed > 0 and effective_needed >= hours_left,
             "too_cold": self._too_cold_to_circulate(),
+            "outdoor_buffer_active": self._outdoor_buffer_active(),
             "scheduling_active": self._scheduling_active(),
             "freeze_risk": self._freeze_risk(),
             "in_cooldown": self._in_cooldown(),

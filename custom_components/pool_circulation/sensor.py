@@ -29,6 +29,7 @@ async def async_setup_entry(
             PoolCirculationModeSensor(coordinator, entry),
             PoolCirculationRpmSensor(coordinator, entry),
             PoolCirculationHoursTodaySensor(coordinator, entry),
+            PoolCirculationHoursLowTodaySensor(coordinator, entry),
             PoolCirculationHoursRemainingSensor(coordinator, entry),
             PoolCirculationPriceSensor(coordinator, entry),
             PoolCirculationPriceLevelSensor(coordinator, entry),
@@ -72,6 +73,7 @@ class PoolCirculationModeSensor(_SensorBase):
             "is_peak_price": d.get("is_peak_price"),
             "must_run": d.get("must_run"),
             "too_cold": d.get("too_cold"),
+            "outdoor_buffer_active": d.get("outdoor_buffer_active"),
             "scheduling_active": d.get("scheduling_active"),
             "freeze_risk": d.get("freeze_risk"),
             "in_cooldown": d.get("in_cooldown"),
@@ -102,6 +104,20 @@ class PoolCirculationHoursTodaySensor(_SensorBase):
     @property
     def native_value(self):
         return self._data.get("hours_run_today", 0)
+
+
+class PoolCirculationHoursLowTodaySensor(_SensorBase):
+    """Hours the pump has run at LOW speed today (background trickle / buffer zone)."""
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry, "hours_low_today", "Pool Circulation Hours Low Today")
+        self._attr_native_unit_of_measurement = "h"
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_icon = "mdi:clock-minus"
+
+    @property
+    def native_value(self):
+        return self._data.get("hours_low_today", 0)
 
 
 class PoolCirculationHoursRemainingSensor(_SensorBase):
