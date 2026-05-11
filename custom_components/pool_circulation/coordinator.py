@@ -75,6 +75,66 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
+def _extract_today_prices(attrs: dict) -> list[float] | None:
+    """Extract a 24-float hourly price list from a price sensor's attributes.
+
+    Handles the three common formats produced by Nordpool and Tibber integrations:
+
+    1. ``today``: list of floats  — standard nordpool HACS integration
+    2. ``today``: list of dicts   — Tibber official integration
+         Keys tried in order: ``total`` (incl. tax), ``energy`` (ex. tax)
+         When a ``startsAt`` ISO timestamp is present the list is sorted
+         by hour so DST transitions don't silently scramble the schedule.
+    3. ``raw_today``: list of dicts — some Nordpool integration versions
+         Key: ``value``
+    """
+    raw = attrs.get("today")
+
+    if raw and len(raw) >= 24:
+        first = raw[0]
+
+        # Format 1: plain floats
+        if isinstance(first, (int, float)):
+            try:
+                return [float(v) for v in raw[:24]]
+            except (TypeError, ValueError):
+                pass
+
+        # Format 2: Tibber dicts  {"total": 1.23, "startsAt": "...T00:00..."}
+        if isinstance(first, dict):
+            for price_key in ("total", "energy", "value", "price"):
+                if price_key not in first:
+                    continue
+                try:
+                    entries = list(raw)
+                    # Sort by hour extracted from startsAt if present
+                    if "startsAt" in first:
+                        def _hour(e: dict) -> int:
+                            ts: str = e.get("startsAt", "")
+                            # "2024-01-01T14:00:00+01:00" → 14
+                            try:
+                                return int(ts[11:13])
+                            except (ValueError, IndexError):
+                                return 0
+                        entries = sorted(entries, key=_hour)
+                    return [float(e[price_key]) for e in entries[:24]]
+                except (KeyError, TypeError, ValueError):
+                    continue
+
+    # Format 3: raw_today (some Nordpool versions)
+    raw_today = attrs.get("raw_today")
+    if raw_today and len(raw_today) >= 24:
+        for price_key in ("value", "total", "energy"):
+            try:
+                prices = [float(e[price_key]) for e in raw_today[:24]]
+                _LOGGER.debug("Day-ahead schedule: using 'raw_today[%s]' attribute", price_key)
+                return prices
+            except (KeyError, TypeError, ValueError):
+                continue
+
+    return None
+
+
 class PoolCirculationCoordinator(DataUpdateCoordinator):
     """Manage pool circulation and heat pump based on electricity price."""
 
@@ -509,25 +569,12 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         if not state:
             return set(), set()
 
-        # Try the plain 'today' attribute first (list of 24 floats — standard nordpool)
-        today_prices: list | None = state.attributes.get("today")
-
-        # Fallback: some Nordpool versions use 'raw_today' (list of dicts with 'value' key)
-        if not today_prices or len(today_prices) < 24:
-            raw_today = state.attributes.get("raw_today")
-            if raw_today:
-                try:
-                    today_prices = [float(e["value"]) for e in raw_today]
-                    _LOGGER.debug(
-                        "Day-ahead schedule: using 'raw_today' attribute on %s", price_entity
-                    )
-                except (KeyError, TypeError, ValueError):
-                    today_prices = None
+        today_prices: list | None = _extract_today_prices(state.attributes)
 
         if not today_prices or len(today_prices) < 24:
             _LOGGER.warning(
                 "Day-ahead schedule: no usable 24-hour price list on %s "
-                "(tried 'today' and 'raw_today'). "
+                "(tried 'today' plain floats, 'today' dicts, 'raw_today' dicts). "
                 "Available attributes: %s — falling back to reactive binary-sensor mode.",
                 price_entity,
                 sorted(state.attributes.keys()),

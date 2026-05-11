@@ -137,14 +137,11 @@ class PoolCirculationConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @staticmethod
     @callback
     def async_get_options_flow(config_entry: config_entries.ConfigEntry):
-        return PoolCirculationOptionsFlow(config_entry)
+        return PoolCirculationOptionsFlow()
 
 
 class PoolCirculationOptionsFlow(config_entries.OptionsFlow):
     """Pool Circulation options."""
-
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self.config_entry = config_entry
 
     async def async_step_init(self, user_input: dict | None = None) -> FlowResult:
         if user_input is not None:
