@@ -924,12 +924,24 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         must_run = effective_needed > 0 and effective_needed >= hours_left
 
         if must_run:
-            _LOGGER.debug(
-                "Must-run override: need %d hours, %d scheduled, %d effective gap, "
-                "%d left today",
-                hours_needed, future_scheduled, effective_needed, hours_left,
-            )
-            desired = MODE_MEDIUM
+            # During peak-price hours the daily target is sacrificed — running MEDIUM
+            # just to hit the counter would cost significantly more than the filtration
+            # benefit. The pump still circulates at LOW (minimum-LOW rule, step 10).
+            is_peak = self._state_is_on(CONF_BINARY_PEAK_PRICE)
+            if is_peak:
+                _LOGGER.debug(
+                    "Must-run needed (%d gap, %d left) but current hour is peak price — "
+                    "holding at LOW, daily target will be partially missed today",
+                    effective_needed, hours_left,
+                )
+                desired = MODE_LOW
+            else:
+                _LOGGER.debug(
+                    "Must-run override: need %d hours, %d scheduled, %d effective gap, "
+                    "%d left today",
+                    hours_needed, future_scheduled, effective_needed, hours_left,
+                )
+                desired = MODE_MEDIUM
 
         elif self._maybe_rebuild_schedule():
             # ── Day-ahead mode ──────────────────────────────────────────────
@@ -1285,6 +1297,10 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             "is_best_price": self._state_is_on(CONF_BINARY_BEST_PRICE),
             "is_peak_price": self._state_is_on(CONF_BINARY_PEAK_PRICE),
             "must_run": effective_needed > 0 and effective_needed >= hours_left,
+            "must_run_peak_suppressed": (
+                effective_needed > 0 and effective_needed >= hours_left
+                and self._state_is_on(CONF_BINARY_PEAK_PRICE)
+            ),
             "too_cold": self._too_cold_to_circulate(),
             "outdoor_buffer_active": self._outdoor_buffer_active(),
             "scheduling_active": self._scheduling_active(),
