@@ -509,12 +509,28 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         if not state:
             return set(), set()
 
+        # Try the plain 'today' attribute first (list of 24 floats — standard nordpool)
         today_prices: list | None = state.attributes.get("today")
+
+        # Fallback: some Nordpool versions use 'raw_today' (list of dicts with 'value' key)
         if not today_prices or len(today_prices) < 24:
-            _LOGGER.debug(
-                "Day-ahead schedule: 'today' attribute not available on %s — "
-                "falling back to reactive mode",
+            raw_today = state.attributes.get("raw_today")
+            if raw_today:
+                try:
+                    today_prices = [float(e["value"]) for e in raw_today]
+                    _LOGGER.debug(
+                        "Day-ahead schedule: using 'raw_today' attribute on %s", price_entity
+                    )
+                except (KeyError, TypeError, ValueError):
+                    today_prices = None
+
+        if not today_prices or len(today_prices) < 24:
+            _LOGGER.warning(
+                "Day-ahead schedule: no usable 24-hour price list on %s "
+                "(tried 'today' and 'raw_today'). "
+                "Available attributes: %s — falling back to reactive binary-sensor mode.",
                 price_entity,
+                sorted(state.attributes.keys()),
             )
             return set(), set()
 
