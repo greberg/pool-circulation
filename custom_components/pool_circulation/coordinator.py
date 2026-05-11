@@ -75,66 +75,78 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
-def _parse_price_list(raw: list, source_attr: str) -> list[float] | None:
-    """Try to extract a list of 24 floats from a raw attribute value.
+def _ts_to_hour(ts: str) -> int:
+    """Extract the local hour (0-23) from an ISO-8601 timestamp string."""
+    # "2026-05-11T14:00:00+02:00"  or  "2026-05-11 14:00:00"
+    try:
+        for sep in ("T", " "):
+            if sep in ts:
+                return int(ts.split(sep)[1][:2])
+    except (ValueError, IndexError):
+        pass
+    return 0
 
-    Accepts plain float lists and dict lists with common price keys.
-    Pads with a very high price for any missing hours so those hours
-    are never selected as cheap regardless of partial data.
-    Requires at least 1 entry to attempt parsing.
+
+def _parse_price_list(raw: list, source_attr: str, today_str: str | None = None) -> list[float] | None:
+    """Try to extract exactly 24 hourly floats from a raw attribute list.
+
+    When *today_str* is supplied (ISO date, e.g. "2026-05-11") dict lists are
+    filtered to entries whose timestamp starts with that date before slicing to
+    24 entries — this handles multi-day attributes like ``prices`` (48 entries
+    spanning today + tomorrow).
+
+    Pads any short result with infinity so missing hours are never scheduled.
     """
     if not raw:
         return None
 
     first = raw[0]
 
-    # Plain floats / ints
+    # ── plain floats / ints ──────────────────────────────────────────────────
     if isinstance(first, (int, float)):
         try:
             prices = [float(v) for v in raw]
         except (TypeError, ValueError):
             return None
-        if prices:
-            if len(prices) < 24:
-                _LOGGER.debug(
-                    "Day-ahead schedule: '%s' has %d entries (< 24) — padding missing hours",
-                    source_attr, len(prices),
-                )
-            return (prices + [float("inf")] * 24)[:24]
+        if len(prices) < 24:
+            _LOGGER.debug(
+                "Day-ahead: '%s' has %d entries — padding missing hours with ∞",
+                source_attr, len(prices),
+            )
+        return (prices + [float("inf")] * 24)[:24]
 
-    # Dicts with a known price key
+    # ── list of dicts ────────────────────────────────────────────────────────
     if isinstance(first, dict):
         _LOGGER.debug(
-            "Day-ahead schedule: '%s' is a list of dicts, keys=%s",
-            source_attr, sorted(first.keys()),
+            "Day-ahead: '%s' is a dict list, keys=%s", source_attr, sorted(first.keys())
         )
-        for price_key in ("total", "energy", "value", "price", "cost", "amount"):
+        # Supported timestamp keys (for sorting and date-filtering)
+        ts_key = next(
+            (k for k in ("start_time", "startsAt", "start", "starts_at", "time", "hour_start")
+             if k in first),
+            None,
+        )
+        # Supported price keys — ordered by preference
+        for price_key in ("price", "total", "price_per_kwh", "energy", "value", "cost", "amount"):
             if price_key not in first:
                 continue
             try:
-                entries = list(raw)
-                # Sort by hour from ISO timestamp if present
-                ts_key = next((k for k in ("startsAt", "start", "starts_at", "time", "hour_start") if k in first), None)
+                entries: list = list(raw)
+                # Filter to today's date when the list spans multiple days
+                if today_str and ts_key:
+                    entries = [e for e in entries if str(e.get(ts_key, "")).startswith(today_str)]
+                # Sort by timestamp so DST or out-of-order data doesn't scramble hours
                 if ts_key:
-                    def _hour(e: dict, _k: str = ts_key) -> int:
-                        ts: str = str(e.get(_k, ""))
-                        try:
-                            # "2024-01-01T14:00:00+01:00" or "2024-01-01 14:00:00"
-                            for sep in ("T", " "):
-                                if sep in ts:
-                                    return int(ts.split(sep)[1][:2])
-                        except (ValueError, IndexError):
-                            pass
-                        return 0
-                    entries = sorted(entries, key=_hour)
-                prices = [float(e[price_key]) for e in entries]
-                if prices:
-                    if len(prices) < 24:
-                        _LOGGER.debug(
-                            "Day-ahead schedule: '%s[%s]' has %d entries — padding",
-                            source_attr, price_key, len(prices),
-                        )
-                    return (prices + [float("inf")] * 24)[:24]
+                    entries = sorted(entries, key=lambda e, _k=ts_key: _ts_to_hour(str(e.get(_k, ""))))
+                if not entries:
+                    continue
+                prices = [float(e[price_key]) for e in entries[:24]]
+                if len(prices) < 24:
+                    _LOGGER.debug(
+                        "Day-ahead: '%s[%s]' has %d entries after filtering — padding",
+                        source_attr, price_key, len(prices),
+                    )
+                return (prices + [float("inf")] * 24)[:24]
             except (KeyError, TypeError, ValueError):
                 continue
 
@@ -144,45 +156,52 @@ def _parse_price_list(raw: list, source_attr: str) -> list[float] | None:
 def _extract_today_prices(attrs: dict) -> list[float] | None:
     """Extract a 24-float hourly price list from a price sensor's attributes.
 
-    Tries every known attribute name used by Nordpool, Tibber, and derivative
-    integrations. Accepts plain float lists and dict lists. Partial lists are
-    padded with infinity so only known hours are candidates for scheduling.
+    Supports:
+    - ``today``     : 24 plain floats (Nordpool HACS, Tibber official)
+    - ``prices``    : 48 dicts {start_time, price} — today + tomorrow combined
+    - ``data``      : 48 dicts {start_time, price_per_kwh} — today + tomorrow
+    - ``raw_today`` : dicts {value} (some Nordpool versions)
+    - and several other naming variants
+
+    Multi-day dict lists are date-filtered to today before slicing.
     """
-    # Ordered from most to least common across Nordpool / Tibber integrations
+    today_str = datetime.now().date().isoformat()
+
+    # Ordered by reliability: plain 24-float list first, then dict variants
     candidates = [
-        "today",           # Nordpool HACS + official Tibber HA integration
-        "raw_today",       # Nordpool alternative
-        "today_prices",    # some custom integrations
-        "prices_today",    # alternative naming
-        "hourly_prices",   # generic
-        "prices",          # generic
-        "current_day",     # alternative
-        "today_data",      # alternative
+        ("today",        False),   # 24 plain floats — most reliable, no date filter needed
+        ("raw_today",    False),   # Nordpool alternative (dicts with 'value')
+        ("prices",       True),    # 48 dicts {start_time, price} — must date-filter
+        ("data",         True),    # 48 dicts {start_time, price_per_kwh} — must date-filter
+        ("today_prices", False),
+        ("prices_today", False),
+        ("hourly_prices", False),
+        ("current_day",  False),
+        ("today_data",   False),
     ]
 
-    for attr in candidates:
+    for attr, needs_date_filter in candidates:
         raw = attrs.get(attr)
         if not raw or not isinstance(raw, (list, tuple)):
             continue
-        result = _parse_price_list(raw, attr)
+        result = _parse_price_list(raw, attr, today_str if needs_date_filter else None)
         if result is not None:
+            real = sum(1 for p in result if p < float("inf"))
             _LOGGER.debug(
-                "Day-ahead schedule: found %d prices in attribute '%s'",
-                sum(1 for p in result if p < float("inf")),
-                attr,
+                "Day-ahead schedule built from '%s': %d hours with known prices", attr, real
             )
             return result
 
-    # Nothing found — dump all list-type attributes to help debug
-    list_attrs = {k: f"len={len(v)}, first={v[0]!r}" for k, v in attrs.items() if isinstance(v, (list, tuple)) and v}
+    # Nothing found — show actionable debug info
+    list_attrs = {k: f"len={len(v)}, sample={v[0]!r}" for k, v in attrs.items() if isinstance(v, (list, tuple)) and v}
     if list_attrs:
         _LOGGER.warning(
-            "Day-ahead schedule: no price list found. List-type attributes on sensor: %s",
-            list_attrs,
+            "Day-ahead schedule: no price list found in sensor. "
+            "List-type attributes present: %s", list_attrs,
         )
     else:
         _LOGGER.warning(
-            "Day-ahead schedule: no price list found and sensor has no list-type attributes. "
+            "Day-ahead schedule: sensor has no list-type attributes at all. "
             "Scalar attributes: %s",
             {k: v for k, v in attrs.items() if not isinstance(v, (list, tuple, dict))},
         )
