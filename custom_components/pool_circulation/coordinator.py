@@ -207,8 +207,6 @@ def _extract_today_prices(attrs: dict) -> list[float] | None:
         )
     return None
 
-    return None
-
 
 class PoolCirculationCoordinator(DataUpdateCoordinator):
     """Manage pool circulation and heat pump based on electricity price."""
@@ -233,6 +231,11 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         # Extra filter state — not persisted (resets on HA restart)
         self.extra_filter_active: bool = False
         self._extra_filter_task: asyncio.Task | None = None
+
+        # Cover-open circulation burst — 5-min HIGH RPM when cover is opened
+        self.cover_circulation_active: bool = False
+        self._cover_circulation_task: asyncio.Task | None = None
+        self._cover_watcher_unsubs: list[Any] = []
 
         # Cooldown / min-on: timestamps to prevent rapid on/off cycling
         self._last_turned_off: datetime | None = None
@@ -308,6 +311,7 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         # instead of waiting up to 59 minutes for the next hourly tick.
         self._register_temp_watchers()
         self._register_price_watchers()
+        self._register_cover_watcher()
 
         # Defer the initial mode evaluation until HA is fully started so that
         # device integrations (e.g. heat pump) have finished their own setup.
@@ -326,6 +330,9 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         if self._extra_filter_task:
             self._extra_filter_task.cancel()
             self._extra_filter_task = None
+        if self._cover_circulation_task:
+            self._cover_circulation_task.cancel()
+            self._cover_circulation_task = None
         for unsub in self._subscriptions:
             unsub()
         self._subscriptions.clear()
@@ -335,6 +342,9 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         for unsub in self._price_watcher_unsubs:
             unsub()
         self._price_watcher_unsubs.clear()
+        for unsub in self._cover_watcher_unsubs:
+            unsub()
+        self._cover_watcher_unsubs.clear()
 
     # ------------------------------------------------------------------
     # Persistence
@@ -567,6 +577,64 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
                     threshold, old_val if old_val is not None else float("nan"), new_val,
                 )
                 self.hass.async_create_task(self.async_evaluate_mode())
+
+    def _register_cover_watcher(self) -> None:
+        """Subscribe to pool cover state changes to trigger the opening burst."""
+        for unsub in list(self._cover_watcher_unsubs):
+            unsub()
+        self._cover_watcher_unsubs.clear()
+
+        cover = self.cfg.get(CONF_COVER_POOL)
+        if cover:
+            unsub = async_track_state_change_event(
+                self.hass, [cover], self._on_cover_changed,
+            )
+            self._cover_watcher_unsubs.append(unsub)
+            _LOGGER.debug("Watching pool cover: %s", cover)
+
+    @callback
+    def _on_cover_changed(self, event) -> None:
+        """Trigger 5-min HIGH circulation burst when the pool cover is opened.
+
+        Circulates the stagnant water that sat under the cover before UV resumes.
+        Bypasses cooldown and min-on — the user just opened the cover intentionally.
+        """
+        new_state = event.data.get("new_state")
+        old_state = event.data.get("old_state")
+        if new_state is None:
+            return
+
+        new = new_state.state
+        old = old_state.state if old_state else None
+
+        # Only fire when cover transitions TO open (not already open)
+        if new == "open" and old != "open":
+            _LOGGER.info("Pool cover opened — starting 5-min HIGH circulation burst")
+            self.hass.async_create_task(self._start_cover_circulation())
+
+    async def _start_cover_circulation(self) -> None:
+        """Activate 5-min HIGH RPM burst after cover opens."""
+        # Cancel any running burst (e.g. cover opened twice quickly)
+        if self._cover_circulation_task:
+            self._cover_circulation_task.cancel()
+            self._cover_circulation_task = None
+
+        self.cover_circulation_active = True
+        self._cover_circulation_task = self.hass.async_create_task(
+            self._cover_circulation_timeout()
+        )
+        await self.async_evaluate_mode()
+
+    async def _cover_circulation_timeout(self) -> None:
+        """Deactivate cover burst after 5 minutes."""
+        try:
+            await asyncio.sleep(5 * 60)
+        except asyncio.CancelledError:
+            return
+        _LOGGER.info("Cover circulation burst complete — returning to normal schedule")
+        self.cover_circulation_active = False
+        self._cover_circulation_task = None
+        await self.async_evaluate_mode()
 
     # ------------------------------------------------------------------
     # Extra filter mode
@@ -847,7 +915,8 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         Priority (highest → lowest):
         1. Freeze protection — outdoor temp ≤ freeze threshold → MEDIUM (bypasses both timers)
         2. Extra filter active → HIGH (bypasses both timers — user explicitly triggered)
-        3. Automation disabled → hold current mode
+        3. Cover opened → HIGH for 5 min (bypass timers — circulate stagnant water)
+        4. Automation disabled → hold current mode
         4. Min-on — pump started recently → hold current running mode (blocks algae skip,
            peak price, and any other reason to stop — pump must run its minimum time)
         5. Pool temperature gate — pool below algae threshold:
@@ -866,7 +935,11 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         if self.extra_filter_active:
             return MODE_HIGH
 
-        # 3. Automation disabled — hold current mode
+        # 3. Cover-open burst — 5 min HIGH to circulate stagnant water after cover removal
+        if self.cover_circulation_active:
+            return MODE_HIGH
+
+        # 4. Automation disabled — hold current mode
         if not self.automation_enabled:
             return self.current_mode
 
@@ -1092,16 +1165,17 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
     # Heat pump
     # ------------------------------------------------------------------
     async def _update_heat_pump(self, mode: str) -> None:
-        """Set heat pump state and target temperature based on mode and pool temp.
+        """Set heat pump target temperature based on current price tier.
 
-        Rules:
-        - MODE_MEDIUM (scheduled cheap hours): always ON at best-price target temp.
-          This is the normal daily run during the cheapest electricity window.
-        - MODE_HIGH (extra filter, user-triggered): also ON at best-price target
-          temp — user intentionally requested intensive filtration so keep heating.
-        - MODE_LOW (background trickle or freeze): ON at normal target temp ONLY
-          if pool temp is below the heating threshold (pool getting cold).
-        - MODE_OFF: turn OFF (no circulation = no point heating).
+        The heat pump is NEVER switched off — it always stays on and manages
+        its own temperature control. Only the target temperature changes:
+
+        - HIGH / MEDIUM  (cheap hours / extra filter / cover burst)
+                         → best-price target temp (default 31°C)
+                           Maximum heating during cheapest electricity.
+        - LOW / OFF      (background / off-peak / standby)
+                         → normal target temp (default 30°C)
+                           Maintains pool temperature without peak consumption.
         """
         hp = self.cfg.get(CONF_CLIMATE_HEAT_PUMP)
         if not hp:
@@ -1109,48 +1183,19 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
 
         best_price_temp = float(self.cfg.get(CONF_HP_TEMP_BEST_PRICE, DEFAULT_HP_TEMP_BEST_PRICE))
         normal_temp = float(self.cfg.get(CONF_HP_TEMP_NORMAL, DEFAULT_HP_TEMP_NORMAL))
-        heating_threshold = float(
-            self.cfg.get(CONF_POOL_TEMP_HEATING_THRESHOLD, DEFAULT_POOL_TEMP_HEATING_THRESHOLD)
+
+        target_temp = best_price_temp if mode in (MODE_HIGH, MODE_MEDIUM) else normal_temp
+
+        await self.hass.services.async_call(
+            "climate",
+            "set_temperature",
+            {"entity_id": hp, "temperature": target_temp},
+            blocking=True,
         )
-
-        pool_temp = self._state_float(CONF_SENSOR_POOL_TEMP)
-        pool_cold = pool_temp is not None and pool_temp < heating_threshold
-
-        if mode in (MODE_MEDIUM, MODE_HIGH):
-            # MEDIUM = scheduled cheap hours (daily target)
-            # HIGH   = extra filter (user-triggered intensive run)
-            # Both warrant full heat pump at best-price target temp.
-            target_temp = best_price_temp
-            hp_on = True
-        elif mode == MODE_LOW and pool_cold:
-            # LOW = background trickle or freeze protection.
-            # Only heat when pool is actually getting cold.
-            target_temp = normal_temp
-            hp_on = True
-        else:
-            target_temp = None
-            hp_on = False
-
-        if hp_on:
-            if target_temp is not None:
-                await self.hass.services.async_call(
-                    "climate",
-                    "set_temperature",
-                    {"entity_id": hp, "temperature": target_temp},
-                    blocking=True,
-                )
-            await self.hass.services.async_call(
-                "climate", "turn_on", {"entity_id": hp}, blocking=True
-            )
-            _LOGGER.debug(
-                "Heat pump ON: mode=%s, target=%.1f°C, pool_temp=%s",
-                mode, target_temp, pool_temp,
-            )
-        else:
-            await self.hass.services.async_call(
-                "climate", "turn_off", {"entity_id": hp}, blocking=True
-            )
-            _LOGGER.debug("Heat pump OFF: mode=%s", mode)
+        await self.hass.services.async_call(
+            "climate", "turn_on", {"entity_id": hp}, blocking=True
+        )
+        _LOGGER.debug("Heat pump ON: mode=%s, target=%.1f°C", mode, target_temp)
 
     # ------------------------------------------------------------------
     # UV lamp
@@ -1288,6 +1333,7 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             "mode": self.current_mode,
             "automation_enabled": self.automation_enabled,
             "extra_filter_active": self.extra_filter_active,
+            "cover_circulation_active": self.cover_circulation_active,
             "hours_run_today": self.hours_run_today,
             "hours_low_today": self.hours_low_today,
             "hours_remaining": hours_needed,

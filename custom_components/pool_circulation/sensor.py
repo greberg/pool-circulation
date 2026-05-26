@@ -83,6 +83,7 @@ class PoolCirculationModeSensor(_SensorBase):
             "in_min_on": d.get("in_min_on"),
             "min_on_remaining": d.get("min_on_remaining"),
             "extra_filter_active": d.get("extra_filter_active"),
+            "cover_circulation_active": d.get("cover_circulation_active"),
             "uv_on": d.get("uv_on"),
             "outdoor_temp": d.get("outdoor_temp"),
             "pool_temp": d.get("pool_temp"),
