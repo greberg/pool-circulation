@@ -223,6 +223,8 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         self._store = Store(hass, STORE_VERSION, f"{STORE_KEY}_{entry.entry_id}")
 
         self.automation_enabled: bool = True
+        # Winter mode — heat pump kept off, circulation logic unchanged
+        self.winter_mode: bool = False
         self.current_mode: str = MODE_OFF
         self.hours_run_today: int = 0      # MEDIUM + HIGH hours (counts toward daily_hours target)
         self.hours_low_today: int = 0      # LOW-only hours (background trickle)
@@ -374,6 +376,7 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             self._schedule_date = None
         self.current_mode = stored.get("current_mode", MODE_OFF)
         self.automation_enabled = stored.get("automation_enabled", True)
+        self.winter_mode = stored.get("winter_mode", False)
         for attr, key in (
             ("_last_turned_off", "last_turned_off"),
             ("_last_turned_on", "last_turned_on"),
@@ -393,6 +396,7 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
                 "hours_low_today": self.hours_low_today,
                 "current_mode": self.current_mode,
                 "automation_enabled": self.automation_enabled,
+                "winter_mode": self.winter_mode,
                 "last_turned_off": (
                     self._last_turned_off.isoformat() if self._last_turned_off else None
                 ),
@@ -1167,8 +1171,8 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
     async def _update_heat_pump(self, mode: str) -> None:
         """Set heat pump target temperature based on current price tier.
 
-        The heat pump is NEVER switched off — it always stays on and manages
-        its own temperature control. Only the target temperature changes:
+        Summer: the heat pump is NEVER switched off — it always stays on and
+        manages its own temperature control. Only the target temperature changes:
 
         - HIGH / MEDIUM  (cheap hours / extra filter / cover burst)
                          → best-price target temp (default 31°C)
@@ -1176,9 +1180,20 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         - LOW / OFF      (background / off-peak / standby)
                          → normal target temp (default 30°C)
                            Maintains pool temperature without peak consumption.
+
+        Winter: the heat pump is kept off regardless of mode. Circulation
+        (schedule, freeze protection, etc.) is unaffected.
         """
         hp = self.cfg.get(CONF_CLIMATE_HEAT_PUMP)
         if not hp:
+            return
+
+        if self.winter_mode:
+            if self._hp_state() != "off":
+                await self.hass.services.async_call(
+                    "climate", "turn_off", {"entity_id": hp}, blocking=True
+                )
+                _LOGGER.debug("Heat pump OFF: winter mode")
             return
 
         best_price_temp = float(self.cfg.get(CONF_HP_TEMP_BEST_PRICE, DEFAULT_HP_TEMP_BEST_PRICE))
@@ -1332,6 +1347,8 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         return {
             "mode": self.current_mode,
             "automation_enabled": self.automation_enabled,
+            "winter_mode": self.winter_mode,
+            "season": "winter" if self.winter_mode else "summer",
             "extra_filter_active": self.extra_filter_active,
             "cover_circulation_active": self.cover_circulation_active,
             "hours_run_today": self.hours_run_today,
@@ -1364,7 +1381,8 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             "hp_target_temp": self._hp_attr("temperature"),
             "hp_fan_mode": self._hp_attr("fan_mode"),
             "pool_heating_active": (
-                self._state_float(CONF_SENSOR_POOL_TEMP) is not None
+                not self.winter_mode
+                and self._state_float(CONF_SENSOR_POOL_TEMP) is not None
                 and (self._state_float(CONF_SENSOR_POOL_TEMP) or 999)
                 < float(self.cfg.get(CONF_POOL_TEMP_HEATING_THRESHOLD, DEFAULT_POOL_TEMP_HEATING_THRESHOLD))
             ),

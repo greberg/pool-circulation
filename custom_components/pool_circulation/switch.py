@@ -28,6 +28,7 @@ async def async_setup_entry(
         [
             PoolCirculationAutomationSwitch(coordinator, entry),
             PoolExtraFilterSwitch(coordinator, entry),
+            PoolWinterModeSwitch(coordinator, entry),
         ]
     )
 
@@ -90,4 +91,40 @@ class PoolExtraFilterSwitch(CoordinatorEntity, SwitchEntity):
 
     async def async_turn_off(self, **kwargs) -> None:
         await self.coordinator.async_set_extra_filter(False)
+        self.async_write_ha_state()
+
+
+class PoolWinterModeSwitch(CoordinatorEntity, SwitchEntity):
+    """Winter / summer season toggle.
+
+    On (winter): heat pump is turned off and kept off. Circulation logic —
+    schedule, freeze protection, extra filter, cover burst — runs as usual.
+    Off (summer): heat pump is managed by price tier as normal.
+    """
+
+    def __init__(self, coordinator: PoolCirculationCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._attr_name = "Pool Winter Mode"
+        self._attr_unique_id = f"{entry.entry_id}_winter_mode"
+        self._attr_device_info = _DEVICE_INFO(entry)
+
+    @property
+    def icon(self) -> str:
+        return "mdi:snowflake" if self.coordinator.winter_mode else "mdi:white-balance-sunny"
+
+    @property
+    def is_on(self) -> bool:
+        return self.coordinator.winter_mode
+
+    async def async_turn_on(self, **kwargs) -> None:
+        await self._set(True)
+
+    async def async_turn_off(self, **kwargs) -> None:
+        await self._set(False)
+
+    async def _set(self, winter: bool) -> None:
+        self.coordinator.winter_mode = winter
+        self.hass.async_create_task(self.coordinator._save_state())
+        await self.coordinator.async_evaluate_mode()
         self.async_write_ha_state()

@@ -19,6 +19,7 @@ A Home Assistant custom component that automatically controls your pool circulat
 | **Minimum on-time** | Configurable minimum time pump must stay on once started — prevents brief on/off bursts |
 | **UV lamp control** | Automatically turns UV lamp on when pump is running and pool cover is not open |
 | **Heat pump control** | Turns heat pump on/off and sets target temperature based on price period and pool temperature |
+| **Winter / summer mode** | Winter mode switches the heat pump off while circulation keeps following the schedule and freeze protection |
 | **3-speed RPM control** | Maps low / medium / high RPM to individual switches; shows 0 when pump is off |
 | **Persisted state** | Daily hours counter survives HA restarts; resets at midnight |
 | **Automation switch** | Pause the scheduler without changing any other config |
@@ -172,6 +173,7 @@ Go to **Settings → Devices & Services → Pool Circulation → Configure** to 
 |---|---|
 | `switch.pool_circulation_automation` | Enable / disable price-based scheduling |
 | `switch.pool_extra_filter` | Activate extra filter mode — forces high RPM for the configured duration, then auto-disables |
+| `switch.pool_winter_mode` | Season toggle — on = winter: heat pump is turned off and kept off, circulation logic (schedule, freeze protection, extra filter, cover burst) runs as normal. Off = summer: heat pump follows price tier |
 
 ### Numbers
 | Entity | Description |

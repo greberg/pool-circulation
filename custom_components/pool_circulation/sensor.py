@@ -82,6 +82,7 @@ class PoolCirculationModeSensor(_SensorBase):
             "cooldown_remaining": d.get("cooldown_remaining"),
             "in_min_on": d.get("in_min_on"),
             "min_on_remaining": d.get("min_on_remaining"),
+            "season": d.get("season"),
             "extra_filter_active": d.get("extra_filter_active"),
             "cover_circulation_active": d.get("cover_circulation_active"),
             "uv_on": d.get("uv_on"),
