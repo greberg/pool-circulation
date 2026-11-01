@@ -97,7 +97,8 @@ class PoolExtraFilterSwitch(CoordinatorEntity, SwitchEntity):
 class PoolWinterModeSwitch(CoordinatorEntity, SwitchEntity):
     """Winter / summer season toggle.
 
-    On (winter): heat pump is turned off and kept off. Circulation logic —
+    On (winter): heat pump is not touched at all (it is usually offline for
+    the season — turn it off yourself). Circulation logic —
     schedule, freeze protection, extra filter, cover burst — runs as usual.
     Off (summer): heat pump is managed by price tier as normal.
     """

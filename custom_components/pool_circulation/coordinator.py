@@ -1181,19 +1181,15 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
                          → normal target temp (default 30°C)
                            Maintains pool temperature without peak consumption.
 
-        Winter: the heat pump is kept off regardless of mode. Circulation
-        (schedule, freeze protection, etc.) is unaffected.
+        Winter: the heat pump is left completely alone — no service calls at
+        all. It is typically powered down / offline for the season and any
+        call would only time out. Circulation is unaffected.
+
+        Heat pump failures are logged and swallowed so they never block
+        circulation, UV lamp or state updates.
         """
         hp = self.cfg.get(CONF_CLIMATE_HEAT_PUMP)
-        if not hp:
-            return
-
-        if self.winter_mode:
-            if self._hp_state() != "off":
-                await self.hass.services.async_call(
-                    "climate", "turn_off", {"entity_id": hp}, blocking=True
-                )
-                _LOGGER.debug("Heat pump OFF: winter mode")
+        if not hp or self.winter_mode:
             return
 
         best_price_temp = float(self.cfg.get(CONF_HP_TEMP_BEST_PRICE, DEFAULT_HP_TEMP_BEST_PRICE))
@@ -1201,15 +1197,19 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
 
         target_temp = best_price_temp if mode in (MODE_HIGH, MODE_MEDIUM) else normal_temp
 
-        await self.hass.services.async_call(
-            "climate",
-            "set_temperature",
-            {"entity_id": hp, "temperature": target_temp},
-            blocking=True,
-        )
-        await self.hass.services.async_call(
-            "climate", "turn_on", {"entity_id": hp}, blocking=True
-        )
+        try:
+            await self.hass.services.async_call(
+                "climate",
+                "set_temperature",
+                {"entity_id": hp, "temperature": target_temp},
+                blocking=True,
+            )
+            await self.hass.services.async_call(
+                "climate", "turn_on", {"entity_id": hp}, blocking=True
+            )
+        except Exception as err:  # noqa: BLE001 — third-party climate integrations raise anything
+            _LOGGER.warning("Heat pump %s did not respond: %s", hp, err)
+            return
         _LOGGER.debug("Heat pump ON: mode=%s, target=%.1f°C", mode, target_temp)
 
     # ------------------------------------------------------------------
