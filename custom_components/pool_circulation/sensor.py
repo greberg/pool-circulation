@@ -7,15 +7,18 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import DOMAIN, VERSION
 from .coordinator import PoolCirculationCoordinator
 
-_DEVICE_INFO = lambda entry: {
-    "identifiers": {(DOMAIN, entry.entry_id)},
-    "name": entry.title,
-    "manufacturer": "Pool Circulation",
-    "model": "Price-based Scheduler",
-}
+
+def device_info(entry: ConfigEntry) -> dict:
+    return {
+        "identifiers": {(DOMAIN, entry.entry_id)},
+        "name": entry.title,
+        "manufacturer": "Pool Circulation",
+        "model": "Season & price scheduler",
+        "sw_version": VERSION,
+    }
 
 
 async def async_setup_entry(
@@ -28,28 +31,19 @@ async def async_setup_entry(
         [
             PoolCirculationModeSensor(coordinator, entry),
             PoolCirculationReasonSensor(coordinator, entry),
-            PoolCirculationRpmSensor(coordinator, entry),
-            PoolCirculationScheduleSensor(coordinator, entry),
             PoolCirculationHoursTodaySensor(coordinator, entry),
-            PoolCirculationHoursLowTodaySensor(coordinator, entry),
             PoolCirculationHoursRemainingSensor(coordinator, entry),
-            PoolCirculationPriceSensor(coordinator, entry),
-            PoolCirculationPriceLevelSensor(coordinator, entry),
-            PoolOutdoorTempSensor(coordinator, entry),
-            PoolPoolTempSensor(coordinator, entry),
-            PoolHeatPumpModeSensor(coordinator, entry),
-            PoolHeatPumpCurrentTempSensor(coordinator, entry),
         ]
     )
 
 
 class _SensorBase(CoordinatorEntity, SensorEntity):
-    def __init__(self, coordinator, entry, key, name):
+    def __init__(self, coordinator, entry, key, name, icon):
         super().__init__(coordinator)
-        self._entry = entry
         self._attr_name = name
         self._attr_unique_id = f"{entry.entry_id}_{key}"
-        self._attr_device_info = _DEVICE_INFO(entry)
+        self._attr_icon = icon
+        self._attr_device_info = device_info(entry)
 
     @property
     def _data(self) -> dict:
@@ -59,15 +53,14 @@ class _SensorBase(CoordinatorEntity, SensorEntity):
 class PoolCirculationModeSensor(_SensorBase):
     """Current circulation mode: off / low / medium / high.
 
-    Also carries everything the Lovelace cards need (season, rule, plan,
-    thresholds, entity IDs). The bulky ones are kept out of the recorder.
+    Attributes carry everything the dashboard cards need. The bulky ones are
+    kept out of the recorder.
     """
 
     _unrecorded_attributes = frozenset({"plan", "entities", "thresholds"})
 
     def __init__(self, coordinator, entry):
-        super().__init__(coordinator, entry, "mode", "Pool Circulation Mode")
-        self._attr_icon = "mdi:pump"
+        super().__init__(coordinator, entry, "mode", "Pool Circulation Mode", "mdi:pump")
 
     @property
     def native_value(self):
@@ -77,42 +70,16 @@ class PoolCirculationModeSensor(_SensorBase):
     def extra_state_attributes(self):
         d = self._data
         return {
-            "season": d.get("season"),
-            "rule": d.get("rule"),
-            "reason": d.get("reason"),
-            "safety": d.get("safety"),
-            "winter_tier": d.get("winter_tier"),
-            "automation_enabled": d.get("automation_enabled"),
-            "pump_running": d.get("pump_running"),
-            "active_rpm": d.get("active_rpm"),
-            "target_hours": d.get("target_hours"),
-            "done_hours": d.get("done_hours"),
-            "hours_run_today": d.get("hours_run_today"),
-            "hours_low_today": d.get("hours_low_today"),
-            "is_best_price": d.get("is_best_price"),
-            "is_peak_price": d.get("is_peak_price"),
-            "must_run": d.get("must_run"),
-            "too_cold": d.get("too_cold"),
-            "freeze_risk": d.get("freeze_risk"),
-            "in_cooldown": d.get("in_cooldown"),
-            "cooldown_remaining": d.get("cooldown_remaining"),
-            "in_min_on": d.get("in_min_on"),
-            "min_on_remaining": d.get("min_on_remaining"),
-            "extra_filter_active": d.get("extra_filter_active"),
-            "extra_filter_remaining": d.get("extra_filter_remaining"),
-            "cover_circulation_active": d.get("cover_circulation_active"),
-            "uv_on": d.get("uv_on"),
-            "outdoor_temp": d.get("outdoor_temp"),
-            "pool_temp": d.get("pool_temp"),
-            "price": d.get("price"),
-            "price_level": d.get("price_level"),
-            "schedule_available": d.get("schedule_available"),
-            "scheduled_high_hours": d.get("scheduled_high_hours"),
-            "scheduled_low_hours": d.get("scheduled_low_hours"),
-            "unavailable_entities": d.get("unavailable_entities"),
-            "thresholds": d.get("thresholds"),
-            "plan": d.get("plan"),
-            "entities": d.get("entities"),
+            key: d.get(key)
+            for key in (
+                "season", "rule", "reason", "safety", "winter_tier",
+                "automation_enabled", "pump_running", "extra_filter_active",
+                "extra_filter_remaining", "cover_circulation_active", "uv_on",
+                "pool_temp", "outdoor_temp", "price", "is_peak_price",
+                "target_hours", "done_hours", "must_run",
+                "in_cooldown", "in_min_on", "unavailable_entities",
+                "thresholds", "plan", "entities",
+            )
         }
 
 
@@ -120,198 +87,45 @@ class PoolCirculationReasonSensor(_SensorBase):
     """Plain-language explanation of why the pump is in its current mode."""
 
     def __init__(self, coordinator, entry):
-        super().__init__(coordinator, entry, "reason", "Pool Circulation Reason")
-        self._attr_icon = "mdi:information-outline"
+        super().__init__(coordinator, entry, "reason", "Pool Circulation Reason", "mdi:information-outline")
 
     @property
     def native_value(self):
         return (self._data.get("reason") or "")[:255]
 
-    @property
-    def extra_state_attributes(self):
-        d = self._data
-        return {"rule": d.get("rule"), "season": d.get("season"), "safety": d.get("safety")}
 
+class PoolCirculationHoursTodaySensor(_SensorBase):
+    """Hours the pump has run today (all speeds)."""
 
-class PoolCirculationScheduleSensor(_SensorBase):
-    """Today's day-ahead schedule — cheapest MEDIUM hours.
-
-    State: comma-separated HH:00 list of scheduled MEDIUM hours, e.g.
-    "01:00,02:00,06:00,14:00,15:00,22:00,23:00"
-    Matches the old sensor.pool_pump_schedule format so existing templates
-    that call .split(',') continue to work unchanged.
-    State is "reactive" when the price sensor has no 24-hour price list —
-    the component still works via the best-price/peak-price binary sensors
-    but cannot show a day-ahead schedule.
-    """
+    _attr_native_unit_of_measurement = "h"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 1
 
     def __init__(self, coordinator, entry):
-        super().__init__(coordinator, entry, "schedule", "Pool Circulation Schedule")
-        self._attr_icon = "mdi:calendar-clock"
+        super().__init__(coordinator, entry, "hours_today", "Pool Circulation Hours Today", "mdi:clock-check")
 
     @property
     def native_value(self):
-        d = self._data
-        if not d.get("schedule_available"):
-            # Sensor is functional (reactive binary-sensor mode) but no day-ahead list
-            return "reactive"
-        return d.get("scheduled_medium_str", "")
+        return self._data.get("hours_total_today", 0)
 
     @property
     def extra_state_attributes(self):
-        d = self._data
         return {
-            "medium_hours": d.get("scheduled_high_hours", []),
-            "low_hours": d.get("scheduled_low_hours", []),
-            "low_schedule": d.get("scheduled_low_str", ""),
-            "schedule_available": d.get("schedule_available", False),
+            "medium_high_hours": self._data.get("hours_run_today"),
+            "low_hours": self._data.get("hours_low_today"),
         }
 
 
-class PoolCirculationHoursTodaySensor(_SensorBase):
-    """Hours the circulation pump has run today."""
-
-    def __init__(self, coordinator, entry):
-        super().__init__(coordinator, entry, "hours_today", "Pool Circulation Hours Today")
-        self._attr_native_unit_of_measurement = "h"
-        self._attr_state_class = SensorStateClass.MEASUREMENT
-        self._attr_icon = "mdi:clock-check"
-
-    @property
-    def native_value(self):
-        return self._data.get("hours_run_today", 0)
-
-
-class PoolCirculationHoursLowTodaySensor(_SensorBase):
-    """Hours the pump has run at LOW speed today (background trickle / buffer zone)."""
-
-    def __init__(self, coordinator, entry):
-        super().__init__(coordinator, entry, "hours_low_today", "Pool Circulation Hours Low Today")
-        self._attr_native_unit_of_measurement = "h"
-        self._attr_state_class = SensorStateClass.MEASUREMENT
-        self._attr_icon = "mdi:clock-minus"
-
-    @property
-    def native_value(self):
-        return self._data.get("hours_low_today", 0)
-
-
 class PoolCirculationHoursRemainingSensor(_SensorBase):
-    """Hours still needed to meet today's target."""
+    """Hours still needed to meet today's target for the current season."""
+
+    _attr_native_unit_of_measurement = "h"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 1
 
     def __init__(self, coordinator, entry):
-        super().__init__(coordinator, entry, "hours_remaining", "Pool Circulation Hours Remaining")
-        self._attr_native_unit_of_measurement = "h"
-        self._attr_state_class = SensorStateClass.MEASUREMENT
-        self._attr_icon = "mdi:clock-outline"
+        super().__init__(coordinator, entry, "hours_remaining", "Pool Circulation Hours Remaining", "mdi:clock-outline")
 
     @property
     def native_value(self):
         return self._data.get("hours_remaining", 0)
-
-
-class PoolCirculationPriceSensor(_SensorBase):
-    """Current electricity price."""
-
-    def __init__(self, coordinator, entry):
-        super().__init__(coordinator, entry, "price", "Pool Electricity Price")
-        self._attr_native_unit_of_measurement = "SEK/kWh"
-        self._attr_state_class = SensorStateClass.MEASUREMENT
-        self._attr_icon = "mdi:lightning-bolt"
-
-    @property
-    def native_value(self):
-        val = self._data.get("price")
-        return round(val, 3) if val is not None else None
-
-
-class PoolCirculationPriceLevelSensor(_SensorBase):
-    """Current electricity price level label."""
-
-    def __init__(self, coordinator, entry):
-        super().__init__(coordinator, entry, "price_level", "Pool Electricity Price Level")
-        self._attr_icon = "mdi:cash"
-
-    @property
-    def native_value(self):
-        return self._data.get("price_level")
-
-
-class PoolOutdoorTempSensor(_SensorBase):
-    """Outdoor temperature passthrough — hidden by default if no sensor configured."""
-
-    def __init__(self, coordinator, entry):
-        super().__init__(coordinator, entry, "outdoor_temp", "Pool Outdoor Temperature")
-        self._attr_native_unit_of_measurement = "°C"
-        self._attr_state_class = SensorStateClass.MEASUREMENT
-        self._attr_icon = "mdi:thermometer"
-        self._attr_entity_registry_enabled_default = False
-
-    @property
-    def native_value(self):
-        return self._data.get("outdoor_temp")
-
-
-class PoolPoolTempSensor(_SensorBase):
-    """Pool water temperature passthrough — hidden by default if no sensor configured."""
-
-    def __init__(self, coordinator, entry):
-        super().__init__(coordinator, entry, "pool_temp", "Pool Water Temperature")
-        self._attr_native_unit_of_measurement = "°C"
-        self._attr_state_class = SensorStateClass.MEASUREMENT
-        self._attr_icon = "mdi:pool-thermometer"
-        self._attr_entity_registry_enabled_default = False
-
-    @property
-    def native_value(self):
-        return self._data.get("pool_temp")
-
-
-class PoolCirculationRpmSensor(_SensorBase):
-    """Current circulation pump RPM — reads actual switch states."""
-
-    def __init__(self, coordinator, entry):
-        super().__init__(coordinator, entry, "rpm", "Pool Circulation RPM")
-        self._attr_native_unit_of_measurement = "RPM"
-        self._attr_state_class = SensorStateClass.MEASUREMENT
-        self._attr_icon = "mdi:speedometer"
-
-    @property
-    def native_value(self):
-        # 0 when pump is off
-        return self._data.get("active_rpm", 0)
-
-
-class PoolHeatPumpModeSensor(_SensorBase):
-    """Current HVAC mode of the heat pump (off / cool / heat / auto)."""
-
-    def __init__(self, coordinator, entry):
-        super().__init__(coordinator, entry, "hp_mode", "Pool Heat Pump Mode")
-        self._attr_icon = "mdi:heat-pump"
-
-    @property
-    def native_value(self):
-        return self._data.get("hp_mode")
-
-
-class PoolHeatPumpCurrentTempSensor(_SensorBase):
-    """Current temperature reading from the heat pump."""
-
-    def __init__(self, coordinator, entry):
-        super().__init__(coordinator, entry, "hp_current_temp", "Pool Heat Pump Current Temperature")
-        self._attr_native_unit_of_measurement = "°C"
-        self._attr_state_class = SensorStateClass.MEASUREMENT
-        self._attr_icon = "mdi:thermometer"
-
-    @property
-    def native_value(self):
-        val = self._data.get("hp_current_temp")
-        return round(float(val), 1) if val is not None else None
-
-    @property
-    def extra_state_attributes(self):
-        return {
-            "target_temperature": self._data.get("hp_target_temp"),
-            "fan_mode": self._data.get("hp_fan_mode"),
-            "hvac_mode": self._data.get("hp_mode"),
-        }

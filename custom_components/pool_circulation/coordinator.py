@@ -36,26 +36,20 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from .const import (
-    CONF_BINARY_BEST_PRICE,
-    CONF_BINARY_PEAK_PRICE,
     CONF_CLIMATE_HEAT_PUMP,
     CONF_COOLDOWN_MINUTES,
     CONF_COVER_POOL,
     CONF_DAILY_HOURS,
-    CONF_DAILY_LOW_HOURS,
     CONF_EXTRA_FILTER_DURATION,
+    CONF_FEEDBACK_THRESHOLD,
     CONF_HP_TEMP_BEST_PRICE,
     CONF_HP_TEMP_NORMAL,
     CONF_MIN_ON_MINUTES,
     CONF_POOL_CRITICAL_TEMP,
-    CONF_RPM_HIGH,
-    CONF_RPM_LOW,
-    CONF_RPM_MEDIUM,
-    CONF_SENSOR_ACTUAL_RPM,
     CONF_SENSOR_OUTDOOR_TEMP,
     CONF_SENSOR_POOL_TEMP,
+    CONF_SENSOR_PUMP_FEEDBACK,
     CONF_SENSOR_PRICE,
-    CONF_SENSOR_PRICE_LEVEL,
     CONF_SWITCH_CIRCULATION,
     CONF_SWITCH_RPM_HIGH,
     CONF_SWITCH_RPM_LOW,
@@ -70,15 +64,12 @@ from .const import (
     COVER_BURST_MINUTES,
     DEFAULT_COOLDOWN_MINUTES,
     DEFAULT_DAILY_HOURS,
-    DEFAULT_DAILY_LOW_HOURS,
     DEFAULT_EXTRA_FILTER_DURATION,
+    DEFAULT_FEEDBACK_THRESHOLD,
     DEFAULT_HP_TEMP_BEST_PRICE,
     DEFAULT_HP_TEMP_NORMAL,
     DEFAULT_MIN_ON_MINUTES,
     DEFAULT_POOL_CRITICAL_TEMP,
-    DEFAULT_RPM_HIGH,
-    DEFAULT_RPM_LOW,
-    DEFAULT_RPM_MEDIUM,
     DEFAULT_SAFETY_HYSTERESIS,
     DEFAULT_TEMP_ALGAE_THRESHOLD,
     DEFAULT_TEMP_FREEZE_THRESHOLD,
@@ -89,7 +80,10 @@ from .const import (
     DOMAIN,
     EVENT_EXTRA_FILTER_CHANGED,
     EVENT_MODE_CHANGED,
+    EVENT_PUMP_FAULT,
     EVENT_UV_CHANGED,
+    FAULT_RETRY_MINUTES,
+    FEEDBACK_GRACE_SECONDS,
     MAX_ACCOUNTING_GAP_SECONDS,
     MODE_HIGH,
     MODE_LOW,
@@ -101,7 +95,7 @@ from .const import (
     STORE_KEY,
     STORE_VERSION,
 )
-from .logic import INF, Decision, Inputs, Settings, decide
+from .logic import INF, Decision, Inputs, Settings, decide, is_peak_hour
 from .prices import describe_attrs, extract_today_prices
 
 _LOGGER = logging.getLogger(__name__)
@@ -113,11 +107,11 @@ _STARTUP_GRACE_SECONDS = 120
 # Entities of this integration the cards need, by unique_id suffix
 _OWN_ENTITIES = {
     "mode": ("sensor", "mode"),
-    "rpm": ("sensor", "rpm"),
     "reason": ("sensor", "reason"),
     "winter_mode": ("switch", "winter_mode"),
     "automation": ("switch", "automation"),
     "extra_filter": ("switch", "extra_filter"),
+    "pump_fault": ("binary_sensor", "pump_fault"),
 }
 
 
@@ -174,8 +168,15 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         self._price_warned_day: date | None = None
         self._entity_ids: dict[str, str | None] = {}
 
-        # Cache of previous options so the smart update listener can diff changes
-        self._prev_options: dict = dict(entry.options)
+        # Pump feedback — does the pump actually do what the switches say?
+        self.pump_fault: str | None = None          # "not_running" / "not_stopping"
+        self._fault_since: datetime | None = None
+        self._mismatch_since: datetime | None = None
+        self._last_retry: datetime | None = None
+
+        # Config as of the last options update, so the listener can tell
+        # whether an entity changed (reload) or only a setting (re-decide)
+        self.cfg_snapshot: dict = self.cfg
 
     # ------------------------------------------------------------------
     # Config helpers
@@ -191,10 +192,6 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
     @property
     def daily_hours_target(self) -> int:
         return int(self.cfg.get(CONF_DAILY_HOURS, DEFAULT_DAILY_HOURS))
-
-    @property
-    def daily_low_hours_target(self) -> int:
-        return int(self.cfg.get(CONF_DAILY_LOW_HOURS, DEFAULT_DAILY_LOW_HOURS))
 
     @property
     def extra_filter_duration(self) -> int:
@@ -225,7 +222,6 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             freeze=float(c.get(CONF_TEMP_FREEZE_THRESHOLD, DEFAULT_TEMP_FREEZE_THRESHOLD)),
             buffer=float(c.get(CONF_TEMP_OUTDOOR_BUFFER, DEFAULT_TEMP_OUTDOOR_BUFFER)),
             daily_hours=self.daily_hours_target,
-            daily_low_hours=self.daily_low_hours_target,
             winter_skip_hours=int(c.get(CONF_WINTER_SKIP_HOURS, DEFAULT_WINTER_SKIP_HOURS)),
             winter_algae_hours=int(c.get(CONF_WINTER_ALGAE_HOURS, DEFAULT_WINTER_ALGAE_HOURS)),
             winter_min_hours=int(c.get(CONF_WINTER_MIN_HOURS, DEFAULT_WINTER_MIN_HOURS)),
@@ -346,6 +342,7 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         self._account(now)
         self._expire_timers(now)
         await self.async_evaluate_mode()
+        await self._check_feedback(now)
         if self._last_save is None or now - self._last_save >= timedelta(minutes=SAVE_INTERVAL_MINUTES):
             await self._save_state()
 
@@ -395,10 +392,6 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         if temps:
             self._unsubs.append(async_track_state_change_event(self.hass, temps, self._on_temp_changed))
 
-        binaries = [e for e in (cfg.get(CONF_BINARY_BEST_PRICE), cfg.get(CONF_BINARY_PEAK_PRICE)) if e]
-        if binaries:
-            self._unsubs.append(async_track_state_change_event(self.hass, binaries, self._on_price_changed))
-
         if cover := cfg.get(CONF_COVER_POOL):
             self._unsubs.append(async_track_state_change_event(self.hass, [cover], self._on_cover_changed))
 
@@ -422,16 +415,6 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         new_state = event.data.get("new_state")
         old_state = event.data.get("old_state")
         if new_state is None or (old_state and new_state.state == old_state.state):
-            return
-        self.hass.async_create_task(self.async_evaluate_mode())
-
-    @callback
-    def _on_price_changed(self, event) -> None:
-        new_state = event.data.get("new_state")
-        old_state = event.data.get("old_state")
-        if new_state is None or new_state.state not in ("on", "off"):
-            return
-        if old_state and new_state.state == old_state.state:
             return
         self.hass.async_create_task(self.async_evaluate_mode())
 
@@ -526,7 +509,7 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         if entity and self._price_warned_day != today:
             self._price_warned_day = today
             _LOGGER.warning(
-                "No 24-hour price list on %s (%s) — using best/peak price sensors instead",
+                "No price list for today on %s (%s) — running until today's hours are done",
                 entity, describe_attrs(state.attributes) if state else "entity missing",
             )
         return None
@@ -538,8 +521,6 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             pool_temp=self._state_float(CONF_SENSOR_POOL_TEMP),
             outdoor_temp=self._state_float(CONF_SENSOR_OUTDOOR_TEMP),
             prices=self._today_prices(now),
-            is_peak=self._state_is_on(CONF_BINARY_PEAK_PRICE),
-            is_best=self._state_is_on(CONF_BINARY_BEST_PRICE),
             current_mode=self.current_mode,
             automation_enabled=self.automation_enabled,
             extra_filter=self.extra_filter_active,
@@ -618,14 +599,18 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             MODE_MEDIUM: cfg.get(CONF_SWITCH_RPM_MEDIUM),
             MODE_HIGH: cfg.get(CONF_SWITCH_RPM_HIGH),
         }
-        if circ:
-            await self._ensure(circ, mode != MODE_OFF)
-        # Turn the unwanted speeds off before the wanted one on (interlocked relays)
+        # Stopping: disable the speed controller first, then drop the speed inputs.
+        # Running: select the speed first (unwanted speeds off before the wanted
+        # one on), then enable the controller.
+        if circ and mode == MODE_OFF:
+            await self._ensure(circ, False)
         for m, entity in rpm.items():
             if entity and m != mode:
                 await self._ensure(entity, False)
         if rpm.get(mode):
             await self._ensure(rpm[mode], True)
+        if circ and mode != MODE_OFF:
+            await self._ensure(circ, True)
         await self._update_uv_lamp(mode)
 
     async def _ensure(self, entity_id: str, on: bool) -> bool:
@@ -652,6 +637,102 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         self._failed_entities.discard(entity_id)
         _LOGGER.debug("%s → %s", entity_id, "on" if on else "off")
         return True
+
+    # ------------------------------------------------------------------
+    # Pump feedback
+    # ------------------------------------------------------------------
+    async def _check_feedback(self, now: datetime) -> None:
+        """Compare what the switches say with what the feedback sensor measures.
+
+        The switches only reflect the controller's outputs. If the pump has not
+        followed them after FEEDBACK_GRACE_SECONDS a fault is raised, an event
+        fired and the outputs are re-sent every FAULT_RETRY_MINUTES.
+        """
+        running = self._feedback_running()
+        enforced = self._decision is not None and self._decision.enforce
+        if running is None or not enforced:
+            self._mismatch_since = None
+            if self.pump_fault:
+                self._set_fault(None, now)
+            return
+
+        expected = self.current_mode != MODE_OFF
+        if running == expected:
+            self._mismatch_since = None
+            if self.pump_fault:
+                self._set_fault(None, now)
+                self.async_set_updated_data(self._build_data())
+            return
+
+        self._mismatch_since = self._mismatch_since or now
+        if (now - self._mismatch_since).total_seconds() < FEEDBACK_GRACE_SECONDS:
+            return
+        if not self.pump_fault:
+            self._set_fault("not_running" if expected else "not_stopping", now)
+        if self._last_retry is None or now - self._last_retry >= timedelta(minutes=FAULT_RETRY_MINUTES):
+            self._last_retry = now
+            await self._resend_outputs()
+        self.async_set_updated_data(self._build_data())
+
+    def _set_fault(self, fault: str | None, now: datetime) -> None:
+        if fault:
+            _LOGGER.warning(
+                "Pump fault: %s — mode %s but %s reads %s",
+                fault, self.current_mode, self.cfg.get(CONF_SENSOR_PUMP_FEEDBACK),
+                self._state_float(CONF_SENSOR_PUMP_FEEDBACK),
+            )
+        else:
+            _LOGGER.info("Pump fault %s cleared", self.pump_fault)
+            self._last_retry = None
+        self.pump_fault = fault
+        self._fault_since = now if fault else None
+        self.hass.bus.async_fire(
+            EVENT_PUMP_FAULT,
+            {"fault": fault, "active": fault is not None, "mode": self.current_mode,
+             "feedback": self._state_float(CONF_SENSOR_PUMP_FEEDBACK)},
+        )
+
+    async def _resend_outputs(self) -> None:
+        """Re-send the controller outputs even though the switches already look right."""
+        cfg = self.cfg
+        mode = self.current_mode
+        circ = cfg.get(CONF_SWITCH_CIRCULATION)
+        speed = {
+            MODE_LOW: cfg.get(CONF_SWITCH_RPM_LOW),
+            MODE_MEDIUM: cfg.get(CONF_SWITCH_RPM_MEDIUM),
+            MODE_HIGH: cfg.get(CONF_SWITCH_RPM_HIGH),
+        }.get(mode)
+        _LOGGER.warning("Re-sending pump outputs for mode %s", mode)
+        try:
+            if mode == MODE_OFF:
+                for key in (CONF_SWITCH_CIRCULATION, CONF_SWITCH_RPM_LOW, CONF_SWITCH_RPM_MEDIUM, CONF_SWITCH_RPM_HIGH):
+                    if entity := cfg.get(key):
+                        await self._call_switch(entity, False)
+                return
+            # Pulse the enable (or the speed input when there is none): off, pause, on
+            target = circ or speed
+            if target:
+                await self._call_switch(target, False)
+                await asyncio.sleep(2)
+            if speed:
+                await self._call_switch(speed, True)
+            if circ:
+                await self._call_switch(circ, True)
+        except Exception as err:  # noqa: BLE001 — device integrations raise anything
+            _LOGGER.warning("Re-sending pump outputs failed: %s", err)
+
+    async def _call_switch(self, entity_id: str, on: bool) -> None:
+        await self.hass.services.async_call(
+            entity_id.split(".", 1)[0], "turn_on" if on else "turn_off",
+            {"entity_id": entity_id}, blocking=True,
+        )
+
+    def _feedback_running(self) -> bool | None:
+        """True/False from the feedback sensor, None when there is none or it has no reading."""
+        value = self._state_float(CONF_SENSOR_PUMP_FEEDBACK)
+        if value is None:
+            return None
+        return value > float(self.cfg.get(CONF_FEEDBACK_THRESHOLD, DEFAULT_FEEDBACK_THRESHOLD))
 
     # ------------------------------------------------------------------
     # Heat pump
@@ -713,7 +794,7 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         if await self._ensure(uv, uv_on):
             self.hass.bus.async_fire(
                 EVENT_UV_CHANGED,
-                {"uv_on": uv_on, "mode": mode, "cover_open": cover_open, "active_rpm": self._active_rpm()},
+                {"uv_on": uv_on, "mode": mode, "cover_open": cover_open},
             )
 
     # ------------------------------------------------------------------
@@ -749,48 +830,19 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
     # State helpers
     # ------------------------------------------------------------------
     def _pump_running(self) -> bool:
-        circ = self.cfg.get(CONF_SWITCH_CIRCULATION)
-        if not circ:
-            return self.current_mode != MODE_OFF
-        state = self.hass.states.get(circ)
-        return state is not None and state.state == "on"
+        """True when the pump turns — from the feedback sensor if it has a reading."""
+        running = self._feedback_running()
+        if running is not None:
+            return running
+        return self._switches_on()
 
-    def _active_rpm(self) -> int:
-        """Current RPM — from the actual RPM sensor if configured, else the active speed switch."""
-        actual_rpm_entity = self.cfg.get(CONF_SENSOR_ACTUAL_RPM)
-        if actual_rpm_entity:
-            state = self.hass.states.get(actual_rpm_entity)
-            if state and state.state not in _UNAVAILABLE:
-                try:
-                    return int(float(state.state))
-                except ValueError:
-                    pass
-
-        for switch_key, rpm_key, default in (
-            (CONF_SWITCH_RPM_HIGH,   CONF_RPM_HIGH,   DEFAULT_RPM_HIGH),
-            (CONF_SWITCH_RPM_MEDIUM, CONF_RPM_MEDIUM, DEFAULT_RPM_MEDIUM),
-            (CONF_SWITCH_RPM_LOW,    CONF_RPM_LOW,    DEFAULT_RPM_LOW),
-        ):
-            entity_id = self.cfg.get(switch_key)
-            if entity_id:
-                state = self.hass.states.get(entity_id)
-                if state and state.state == "on":
-                    return int(self.cfg.get(rpm_key, default))
-        return 0
-
-    def _hp_state(self) -> str | None:
-        hp = self.cfg.get(CONF_CLIMATE_HEAT_PUMP)
-        if not hp:
-            return None
-        state = self.hass.states.get(hp)
-        return state.state if state else None
-
-    def _hp_attr(self, attr: str):
-        hp = self.cfg.get(CONF_CLIMATE_HEAT_PUMP)
-        if not hp:
-            return None
-        state = self.hass.states.get(hp)
-        return state.attributes.get(attr) if state else None
+    def _switches_on(self) -> bool:
+        """True when the controller is told to run — main switch if there is one, else any speed."""
+        if self.cfg.get(CONF_SWITCH_CIRCULATION):
+            return self._state_is_on(CONF_SWITCH_CIRCULATION)
+        return any(
+            self._state_is_on(k) for k in (CONF_SWITCH_RPM_LOW, CONF_SWITCH_RPM_MEDIUM, CONF_SWITCH_RPM_HIGH)
+        )
 
     def _state_is_on(self, conf_key: str) -> bool:
         entity_id = self.cfg.get(conf_key)
@@ -811,12 +863,10 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         except ValueError:
             return None
 
-    def _state_str(self, conf_key: str) -> str | None:
-        entity_id = self.cfg.get(conf_key)
-        if not entity_id:
-            return None
-        state = self.hass.states.get(entity_id)
-        return state.state if state else None
+    def _feedback_unit(self) -> str | None:
+        entity = self.cfg.get(CONF_SENSOR_PUMP_FEEDBACK)
+        state = self.hass.states.get(entity) if entity else None
+        return state.attributes.get("unit_of_measurement") if state else None
 
     def _entities(self) -> dict[str, str | None]:
         """Entity IDs the cards need — own entities via the registry, devices from config."""
@@ -834,6 +884,7 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             "outdoor_temp": cfg.get(CONF_SENSOR_OUTDOOR_TEMP) or None,
             "circulation": cfg.get(CONF_SWITCH_CIRCULATION) or None,
             "heat_pump": cfg.get(CONF_CLIMATE_HEAT_PUMP) or None,
+            "pump_feedback": cfg.get(CONF_SENSOR_PUMP_FEEDBACK) or None,
         }
 
     # ------------------------------------------------------------------
@@ -857,7 +908,6 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             }
             for h in range(24)
         ]
-        planned = [p["hour"] for p in plan]
 
         return {
             "mode": self.current_mode,
@@ -877,12 +927,9 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             "target_hours": target,
             "done_hours": done,
             "hours_remaining": round(max(0.0, (target or 0) - done), 2),
-            "daily_target": self.daily_hours_target,
             "must_run": d.must_run if d else False,
             "price": self._state_float(CONF_SENSOR_PRICE),
-            "price_level": self._state_str(CONF_SENSOR_PRICE_LEVEL),
-            "is_best_price": self._state_is_on(CONF_BINARY_BEST_PRICE),
-            "is_peak_price": self._state_is_on(CONF_BINARY_PEAK_PRICE),
+            "is_peak_price": is_peak_hour(prices, now.hour),
             "too_cold": pool is not None and pool < s.algae,
             "freeze_risk": bool(d and d.safety),
             "in_cooldown": self._in_cooldown(),
@@ -897,24 +944,15 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
                 "freeze": s.freeze,
                 "buffer": s.buffer,
             },
-            "active_rpm": self._active_rpm(),
             "pump_running": self._pump_running(),
+            "switches_on": self._switches_on(),
+            "pump_fault": self.pump_fault,
+            "pump_fault_since": self._fault_since.isoformat() if self._fault_since else None,
+            "feedback_value": self._state_float(CONF_SENSOR_PUMP_FEEDBACK),
+            "feedback_unit": self._feedback_unit(),
             "uv_on": self._state_is_on(CONF_SWITCH_UV_LAMP),
-            "hp_mode": self._hp_state(),
-            "hp_current_temp": self._hp_attr("current_temperature"),
-            "hp_target_temp": self._hp_attr("temperature"),
-            "hp_fan_mode": self._hp_attr("fan_mode"),
             "schedule_available": bool(d and d.plan),
             "plan": plan,
-            "scheduled_high_hours": [h for h in planned if d and d.plan and d.plan[h] in (MODE_MEDIUM, MODE_HIGH)],
-            "scheduled_low_hours": [h for h in planned if d and d.plan and d.plan[h] == MODE_LOW],
-            # Comma-separated HH:00 strings — old sensor.pool_pump_schedule format
-            "scheduled_medium_str": ",".join(
-                f"{h:02d}:00" for h in planned if d and d.plan and d.plan[h] in (MODE_MEDIUM, MODE_HIGH)
-            ),
-            "scheduled_low_str": ",".join(
-                f"{h:02d}:00" for h in planned if d and d.plan and d.plan[h] == MODE_LOW
-            ),
             "unavailable_entities": sorted(self._failed_entities),
             "entities": self._entities(),
         }

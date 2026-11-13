@@ -2,22 +2,72 @@
   "config": {
     "step": {
       "user": {
-        "title": "Pool Circulation Setup",
-        "description": "Configure circulation pump and heat pump with price-based automation.",
+        "title": "Pool Circulation",
+        "description": "Pick the pump speed switches, the price sensor and the two temperature sensors.",
         "data": {
           "name": "Name",
-          "climate_heat_pump": "Heat pump climate entity",
-          "switch_circulation": "Circulation pump switch",
-          "switch_rpm_low": "Low RPM switch (optional)",
-          "switch_rpm_medium": "Medium RPM switch (optional)",
-          "switch_rpm_high": "High RPM switch (optional)",
-          "sensor_price": "Current electricity price sensor",
-          "sensor_price_level": "Price level sensor",
-          "binary_best_price": "Best price period binary sensor",
-          "binary_peak_price": "Peak price period binary sensor",
-          "daily_hours": "Target circulation hours per day"
+          "switch_rpm_low": "Low speed switch",
+          "switch_rpm_medium": "Medium speed switch",
+          "switch_rpm_high": "High speed switch",
+          "sensor_price": "Electricity price sensor",
+          "sensor_pool_temp": "Pool water temperature",
+          "sensor_outdoor_temp": "Outdoor temperature",
+          "daily_hours": "Summer filtration hours per day",
+          "temp_algae_threshold": "Algae threshold (pool)",
+          "temp_freeze_threshold": "Frost threshold (outdoor)"
+        },
+        "data_description": {
+          "sensor_price": "Needs today's hourly or 15-minute prices as an attribute (Nordpool, Tibber and similar).",
+          "daily_hours": "Summer: the cheapest hours of the day run at medium speed.",
+          "temp_algae_threshold": "Below this pool temperature algae don't grow, so no filtration hours are needed.",
+          "temp_freeze_threshold": "At or below this outdoor temperature the pump runs continuously at low speed."
+        },
+        "sections": {
+          "optional_devices": {
+            "name": "Optional devices",
+            "description": "Leave empty if you don't have them.",
+            "data": {
+              "switch_circulation": "Pump on/off switch",
+              "sensor_pump_feedback": "Pump feedback sensor (power or rpm)",
+              "climate_heat_pump": "Heat pump",
+              "switch_uv_lamp": "UV lamp",
+              "cover_pool": "Pool cover"
+            },
+            "data_description": {
+              "switch_circulation": "The speed controller's enable output, if it has one (e.g. \"Inverter on/off\").",
+              "climate_heat_pump": "Summer only — kept on, target temperature by price. Never touched in winter.",
+              "switch_uv_lamp": "On while the pump runs and the cover is not open.",
+              "cover_pool": "Opening the cover starts a 5-minute high-speed burst.",
+              "sensor_pump_feedback": "Measures whether the pump really turns — a power plug (W) or an rpm template. Used for runtime and to raise a fault when the pump doesn't follow the controller."
+            }
+          },
+          "advanced": {
+            "name": "Advanced",
+            "data": {
+              "pool_critical_temp": "Critical pool temperature",
+              "temp_outdoor_buffer": "Cold outdoor limit",
+              "winter_skip_hours": "Winter, cold: priciest hours to skip",
+              "winter_algae_hours": "Winter, pool above algae threshold: hours per day",
+              "winter_min_hours": "Winter, cold pool: minimum hours per day",
+              "extra_filter_duration": "Extra filter duration",
+              "cooldown_minutes": "Cooldown before restarting",
+              "min_on_minutes": "Minimum on-time",
+              "hp_temp_best_price": "Heat pump target, cheap hours",
+              "hp_temp_normal": "Heat pump target, other hours",
+              "feedback_threshold": "Pump feedback: running above"
+            },
+            "data_description": {
+              "pool_critical_temp": "At or below this the pump runs continuously at medium, in any season.",
+              "temp_outdoor_buffer": "Winter: between the frost threshold and this, run low speed most hours.",
+              "feedback_threshold": "Feedback values above this count as running (W or rpm, default 10)."
+            }
+          }
         }
       }
+    },
+    "error": {
+      "duplicate_speed_switch": "Low, medium and high must be three different switches.",
+      "same_temperature_sensor": "Pool and outdoor temperature must be different sensors."
     },
     "abort": {
       "already_configured": "Pool Circulation is already configured."
@@ -26,24 +76,70 @@
   "options": {
     "step": {
       "init": {
-        "title": "Pool Circulation Options",
+        "title": "Pool Circulation",
         "data": {
-          "daily_hours": "Target circulation hours per day",
-          "binary_best_price": "Best price period binary sensor",
-          "binary_peak_price": "Peak price period binary sensor",
-          "sensor_price": "Current electricity price sensor",
-          "sensor_outdoor_temp": "Outdoor temperature sensor",
-          "sensor_pool_temp": "Pool water temperature sensor",
-          "temp_algae_threshold": "Algae threshold — pool °C below which no filtration is needed",
-          "temp_freeze_threshold": "Frost threshold — outdoor °C at or below which the pump runs continuously",
-          "temp_outdoor_buffer": "Cold buffer — outdoor °C below which winter runs low speed most hours",
-          "pool_critical_temp": "Critical pool temperature — pool °C at or below which the pump runs continuously",
-          "winter_skip_hours": "Winter, cold outdoor: priciest hours that may be skipped",
-          "winter_algae_hours": "Winter, pool above algae threshold: hours per day",
-          "winter_min_hours": "Winter, cold pool and mild outdoor: minimum hours per day"
+          "switch_rpm_low": "Low speed switch",
+          "switch_rpm_medium": "Medium speed switch",
+          "switch_rpm_high": "High speed switch",
+          "sensor_price": "Electricity price sensor",
+          "sensor_pool_temp": "Pool water temperature",
+          "sensor_outdoor_temp": "Outdoor temperature",
+          "daily_hours": "Summer filtration hours per day",
+          "temp_algae_threshold": "Algae threshold (pool)",
+          "temp_freeze_threshold": "Frost threshold (outdoor)"
         },
-        "description": "Summer: daily filtration hours + heat pump by price. Winter: frost and pool-temperature guards first, then price-optimised low-speed running."
+        "data_description": {
+          "sensor_price": "Needs today's hourly or 15-minute prices as an attribute (Nordpool, Tibber and similar).",
+          "daily_hours": "Summer: the cheapest hours of the day run at medium speed.",
+          "temp_algae_threshold": "Below this pool temperature algae don't grow, so no filtration hours are needed.",
+          "temp_freeze_threshold": "At or below this outdoor temperature the pump runs continuously at low speed."
+        },
+        "sections": {
+          "optional_devices": {
+            "name": "Optional devices",
+            "description": "Leave empty if you don't have them.",
+            "data": {
+              "switch_circulation": "Pump on/off switch",
+              "sensor_pump_feedback": "Pump feedback sensor (power or rpm)",
+              "climate_heat_pump": "Heat pump",
+              "switch_uv_lamp": "UV lamp",
+              "cover_pool": "Pool cover"
+            },
+            "data_description": {
+              "switch_circulation": "The speed controller's enable output, if it has one (e.g. \"Inverter on/off\").",
+              "climate_heat_pump": "Summer only — kept on, target temperature by price. Never touched in winter.",
+              "switch_uv_lamp": "On while the pump runs and the cover is not open.",
+              "cover_pool": "Opening the cover starts a 5-minute high-speed burst.",
+              "sensor_pump_feedback": "Measures whether the pump really turns — a power plug (W) or an rpm template. Used for runtime and to raise a fault when the pump doesn't follow the controller."
+            }
+          },
+          "advanced": {
+            "name": "Advanced",
+            "data": {
+              "pool_critical_temp": "Critical pool temperature",
+              "temp_outdoor_buffer": "Cold outdoor limit",
+              "winter_skip_hours": "Winter, cold: priciest hours to skip",
+              "winter_algae_hours": "Winter, pool above algae threshold: hours per day",
+              "winter_min_hours": "Winter, cold pool: minimum hours per day",
+              "extra_filter_duration": "Extra filter duration",
+              "cooldown_minutes": "Cooldown before restarting",
+              "min_on_minutes": "Minimum on-time",
+              "hp_temp_best_price": "Heat pump target, cheap hours",
+              "hp_temp_normal": "Heat pump target, other hours",
+              "feedback_threshold": "Pump feedback: running above"
+            },
+            "data_description": {
+              "pool_critical_temp": "At or below this the pump runs continuously at medium, in any season.",
+              "temp_outdoor_buffer": "Winter: between the frost threshold and this, run low speed most hours.",
+              "feedback_threshold": "Feedback values above this count as running (W or rpm, default 10)."
+            }
+          }
+        }
       }
+    },
+    "error": {
+      "duplicate_speed_switch": "Low, medium and high must be three different switches.",
+      "same_temperature_sensor": "Pool and outdoor temperature must be different sensors."
     }
   }
 }

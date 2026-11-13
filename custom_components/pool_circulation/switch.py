@@ -9,14 +9,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import PoolCirculationCoordinator
-
-_DEVICE_INFO = lambda entry: {
-    "identifiers": {(DOMAIN, entry.entry_id)},
-    "name": entry.title,
-    "manufacturer": "Pool Circulation",
-    "model": "Price-based Scheduler",
-}
-
+from .sensor import device_info
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -42,7 +35,7 @@ class PoolCirculationAutomationSwitch(CoordinatorEntity, SwitchEntity):
         self._attr_name = "Pool Circulation Automation"
         self._attr_unique_id = f"{entry.entry_id}_automation"
         self._attr_icon = "mdi:water-pump"
-        self._attr_device_info = _DEVICE_INFO(entry)
+        self._attr_device_info = device_info(entry)
 
     @property
     def is_on(self) -> bool:
@@ -71,7 +64,7 @@ class PoolExtraFilterSwitch(CoordinatorEntity, SwitchEntity):
         self._attr_name = "Pool Extra Filter"
         self._attr_unique_id = f"{entry.entry_id}_extra_filter"
         self._attr_icon = "mdi:filter-plus"
-        self._attr_device_info = _DEVICE_INFO(entry)
+        self._attr_device_info = device_info(entry)
 
     @property
     def is_on(self) -> bool:
@@ -108,7 +101,7 @@ class PoolWinterModeSwitch(CoordinatorEntity, SwitchEntity):
         self._entry = entry
         self._attr_name = "Pool Winter Mode"
         self._attr_unique_id = f"{entry.entry_id}_winter_mode"
-        self._attr_device_info = _DEVICE_INFO(entry)
+        self._attr_device_info = device_info(entry)
 
     @property
     def icon(self) -> str:

@@ -29,7 +29,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from .const import MODE_HIGH, MODE_LOW, MODE_MEDIUM, MODE_OFF, SEASON_SUMMER, SEASON_WINTER
+from .const import MODE_HIGH, MODE_LOW, MODE_MEDIUM, MODE_OFF, PEAK_HOURS, SEASON_SUMMER, SEASON_WINTER
 
 INF = float("inf")
 RUNNING = (MODE_LOW, MODE_MEDIUM, MODE_HIGH)
@@ -67,7 +67,6 @@ class Settings:
     freeze: float = 2.0
     buffer: float = 4.0
     daily_hours: int = 8
-    daily_low_hours: int = 0
     winter_skip_hours: int = 4
     winter_algae_hours: int = 4
     winter_min_hours: int = 2
@@ -80,8 +79,6 @@ class Inputs:
     pool_temp: float | None = None
     outdoor_temp: float | None = None
     prices: list[float] | None = None      # 24 hourly prices for today
-    is_peak: bool = False
-    is_best: bool = False
     current_mode: str = MODE_OFF
     automation_enabled: bool = True
     extra_filter: bool = False
@@ -161,6 +158,14 @@ def expensive_skips(prices: list[float], k: int) -> set[int]:
             continue
         skipped.add(h)
     return skipped
+
+
+def is_peak_hour(prices: list[float] | None, hour: int) -> bool:
+    """True when *hour* is among today's PEAK_HOURS most expensive hours."""
+    if not prices or len(prices) < 24 or prices[hour] == INF:
+        return False
+    known = sorted((p for p in prices if p < INF), reverse=True)
+    return prices[hour] >= known[min(PEAK_HOURS, len(known)) - 1]
 
 
 def summer_algae_skip(inp: Inputs, s: Settings) -> bool:
@@ -283,7 +288,7 @@ def decide(inp: Inputs, s: Settings) -> Decision:
     if must_run:
         if winter:
             desired, rule, reason = MODE_LOW, RULE_MUST_RUN, "Catching up on today's winter circulation hours"
-        elif inp.is_peak:
+        elif is_peak_hour(inp.prices, hour):
             desired, rule, reason = (MODE_LOW, RULE_MUST_RUN_PEAK,
                                      "Behind on daily hours but peak price — low speed only")
         else:
@@ -302,24 +307,14 @@ def decide(inp: Inputs, s: Settings) -> Decision:
             reason = ("Cheap hour — daily filtration at medium speed" if desired == MODE_MEDIUM
                       else "Outside cheapest hours — low speed")
     else:
+        # No price list today — run until today's hours are done
         rule = RULE_REACTIVE
         needed = max(0.0, (target or 0) - done)
         if winter:
-            if tier == TIER_COLD:
-                desired = MODE_OFF if inp.is_peak else MODE_LOW
-            else:
-                desired = MODE_LOW if inp.is_best and needed > 0 else MODE_OFF
-            reason = "No price list — following best/peak price sensors"
+            desired = MODE_LOW if tier == TIER_COLD or needed > 0 else MODE_OFF
         else:
-            if inp.is_peak:
-                desired = MODE_OFF
-            elif inp.is_best or needed > 0:
-                desired = MODE_MEDIUM
-            elif s.daily_low_hours > 0:
-                desired = MODE_LOW
-            else:
-                desired = MODE_OFF
-            reason = "No price list — following best/peak price sensors"
+            desired = MODE_MEDIUM if needed > 0 else MODE_LOW
+        reason = "No price list — running until today's hours are done"
 
     # 8. Cooldown — don't restart right after stopping
     if desired != MODE_OFF and inp.current_mode == MODE_OFF and inp.in_cooldown:

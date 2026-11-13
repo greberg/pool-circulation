@@ -36,7 +36,7 @@ def at(hour, minute=0):
 class SafetyTests(unittest.TestCase):
     def test_pool_critical_beats_everything_but_bursts(self):
         d = decide(Inputs(now=at(18), season=WINTER, pool_temp=3.8, outdoor_temp=6,
-                          prices=PRICES, is_peak=True, automation_enabled=False), Settings())
+                          prices=PRICES, automation_enabled=False), Settings())
         self.assertEqual(d.mode, MEDIUM)
         self.assertEqual(d.safety, logic.SAFETY_POOL_CRITICAL)
         self.assertTrue(d.enforce)
@@ -56,7 +56,7 @@ class SafetyTests(unittest.TestCase):
 
     def test_frost_runs_low_even_at_peak(self):
         d = decide(Inputs(now=at(18), season=WINTER, pool_temp=6, outdoor_temp=-3,
-                          prices=PRICES, is_peak=True), Settings())
+                          prices=PRICES), Settings())
         self.assertEqual((d.mode, d.safety), (LOW, logic.SAFETY_FROST))
         self.assertEqual(d.plan, [LOW] * 24)
 
@@ -118,10 +118,12 @@ class WinterTests(unittest.TestCase):
                               prices=PRICES), Settings())
             self.assertIn(d.mode, (OFF, LOW))
 
-    def test_winter_reactive_without_prices(self):
-        d = decide(Inputs(now=at(12), season=WINTER, pool_temp=6, outdoor_temp=3,
-                          is_peak=True), Settings())
-        self.assertEqual((d.mode, d.rule), (OFF, logic.RULE_REACTIVE))
+    def test_winter_without_prices(self):
+        cold = decide(Inputs(now=at(12), season=WINTER, pool_temp=6, outdoor_temp=3), Settings())
+        self.assertEqual((cold.mode, cold.rule), (LOW, logic.RULE_REACTIVE))
+        done = decide(Inputs(now=at(12), season=WINTER, pool_temp=5, outdoor_temp=8,
+                             hours_low=3), Settings(winter_min_hours=2))
+        self.assertEqual(done.mode, OFF)
 
 
 class SummerTests(unittest.TestCase):
@@ -139,13 +141,25 @@ class SummerTests(unittest.TestCase):
     def test_must_run_respects_peak(self):
         s = Settings(daily_hours=8)
         d = decide(Inputs(now=at(18), pool_temp=24, outdoor_temp=18, prices=PRICES,
-                          is_peak=True, hours_run=0), s)
+                          hours_run=0), s)
         self.assertEqual((d.mode, d.rule), (LOW, logic.RULE_MUST_RUN_PEAK))
 
     def test_manual_does_not_enforce(self):
         d = decide(Inputs(now=at(12), pool_temp=24, outdoor_temp=18, current_mode=HIGH,
                           automation_enabled=False), Settings())
         self.assertEqual((d.mode, d.enforce), (HIGH, False))
+
+
+    def test_summer_without_prices_runs_until_target(self):
+        s = Settings(daily_hours=4)
+        self.assertEqual(decide(Inputs(now=at(9), pool_temp=24, outdoor_temp=18), s).mode, MEDIUM)
+        self.assertEqual(decide(Inputs(now=at(9), pool_temp=24, outdoor_temp=18, hours_run=4), s).mode, LOW)
+
+    def test_peak_hours_come_from_prices(self):
+        self.assertTrue(logic.is_peak_hour(PRICES, 18))
+        self.assertTrue(logic.is_peak_hour(PRICES, 8))
+        self.assertFalse(logic.is_peak_hour(PRICES, 2))
+        self.assertFalse(logic.is_peak_hour(None, 18))
 
 
 class PriceTests(unittest.TestCase):

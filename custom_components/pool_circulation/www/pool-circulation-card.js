@@ -9,7 +9,7 @@
  * automatically when omitted — and an optional `title:`.
  */
 
-const CARD_VERSION = "1.6.0";
+const CARD_VERSION = "1.8.0";
 
 const MODE = {
   off: { label: "Off", color: "var(--pc-off)" },
@@ -173,7 +173,9 @@ class PoolCirculationCard extends PoolCardBase {
     const target = a.target_hours;
     const done = a.done_hours || 0;
     const pct = target ? Math.min(100, (done / target) * 100) : 100;
-    const rpm = a.active_rpm ? `${a.active_rpm} rpm` : running ? "starting…" : "stopped";
+    const feedback = a.feedback_value === null || a.feedback_value === undefined ? ""
+      : ` · ${Math.round(a.feedback_value)}${a.feedback_unit ? ` ${a.feedback_unit}` : ""}`;
+    const pumpState = (a.pump_running ? "Pump running" : running ? "Starting…" : "Pump stopped") + feedback;
     const extraLeft = Math.ceil((a.extra_filter_remaining || 0) / 60);
 
     const poolMax = Math.max(winter ? 16 : 32, (a.pool_temp ?? 0) + 2);
@@ -199,6 +201,12 @@ class PoolCirculationCard extends PoolCardBase {
       today = `<div class="bar"><div style="width:${pct}%"></div></div>
         <span class="muted">${fmtHours(done)} / ${fmtHours(target)} h${a.must_run ? " · catching up" : ""}</span>`;
     }
+
+    const fault = a.pump_fault ? `<div class="banner danger"><ha-icon icon="mdi:pump-off"></ha-icon>
+        <div><b>${a.pump_fault === "not_stopping" ? "Pump won't stop" : "Pump not responding"}</b>
+        <div class="muted">${a.pump_fault === "not_stopping"
+          ? "Feedback shows the pump running although it is switched off"
+          : "Switches are on but the feedback sensor shows no running pump"} — outputs are re-sent every 10 min</div></div></div>` : "";
 
     const unavailable = (a.unavailable_entities || []).length
       ? `<div class="banner warn"><ha-icon icon="mdi:lan-disconnect"></ha-icon>
@@ -271,12 +279,13 @@ class PoolCirculationCard extends PoolCardBase {
         <div class="pump ${running ? "spin" : ""}"><ha-icon icon="${running ? "mdi:fan" : "mdi:fan-off"}"></ha-icon></div>
         <div>
           <div class="mode">${mode.label}</div>
-          <div class="muted">${esc(rpm)}${a.automation_enabled === false ? " · manual" : ""}</div>
+          <div class="muted">${pumpState}${a.automation_enabled === false ? " · manual" : ""}</div>
         </div>
       </div>
       <div class="reason">${esc(a.reason)}</div>
       ${safety ? `<div class="banner danger"><ha-icon icon="${safety.icon}"></ha-icon>
         <div><b>${safety.title}</b><div class="muted">Runs regardless of price, timers and manual mode</div></div></div>` : ""}
+      ${fault}
       ${unavailable}
 
       <div class="row"><span class="muted">Pool water</span><span class="val">${fmtTemp(a.pool_temp)}</span>${poolScale}</div>
@@ -381,8 +390,8 @@ class PoolCirculationPlanCard extends PoolCardBase {
       </div>
       <div class="muted">${esc(subtitle)}</div>
       ${hasPlan ? `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Planned pump speed per hour today">${bars}${now}${labels}</svg>
-        <div class="legend">${legend}${hasPrices ? "" : "<span>No price list — bar height is not price</span>"}</div>`
-        : `<div class="empty">No plan yet — waiting for today's prices. The pump follows the best/peak price sensors meanwhile.</div>`}
+        <div class="legend">${legend}${hasPrices ? "" : "<span>No price list for today</span>"}</div>`
+        : `<div class="empty">No plan yet — waiting for today's prices. Meanwhile the pump runs until today's hours are done.</div>`}
     </ha-card>`;
   }
 }

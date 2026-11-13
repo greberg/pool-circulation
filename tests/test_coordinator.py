@@ -11,6 +11,7 @@ import importlib
 import sys
 import types
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -98,7 +99,9 @@ def _install_stubs():
         return m
 
     mod("homeassistant")
-    mod("homeassistant.const", EVENT_HOMEASSISTANT_STARTED="homeassistant_started")
+    mod("homeassistant.const", EVENT_HOMEASSISTANT_STARTED="homeassistant_started",
+        Platform=types.SimpleNamespace(BINARY_SENSOR="binary_sensor", SENSOR="sensor",
+                                       SWITCH="switch", NUMBER="number"))
     mod("homeassistant.core", HomeAssistant=FakeHass, Event=object, callback=lambda f: f)
     mod("homeassistant.config_entries", ConfigEntry=object)
     mod("homeassistant.helpers")
@@ -151,6 +154,25 @@ def _install_stubs():
     )
     sys.modules["homeassistant.util"].dt = dt
 
+    # Just enough of voluptuous / selectors / flows to import config_flow
+    class Marker(str):
+        def __new__(cls, key, default=None, description=None):
+            m = str.__new__(cls, key)
+            m.default, m.description = default, description
+            return m
+
+    mod("voluptuous", Schema=lambda d: d, Required=Marker, Optional=Marker)
+    sys.modules["homeassistant.config_entries"].ConfigFlow = type(
+        "ConfigFlow", (), {"__init_subclass__": classmethod(lambda cls, **kw: None)})
+    sys.modules["homeassistant.config_entries"].OptionsFlow = object
+    sys.modules["homeassistant.config_entries"].ConfigEntry = object
+    mod("homeassistant.data_entry_flow", FlowResult=dict, section=lambda schema, opts: ("section", schema, opts))
+    selector = mod("homeassistant.helpers.selector")
+    for name in ("EntitySelector", "EntitySelectorConfig", "NumberSelector",
+                 "NumberSelectorConfig", "TextSelector"):
+        setattr(selector, name, lambda *a, **k: (a, k))
+    selector.NumberSelectorMode = types.SimpleNamespace(BOX="box")
+
 
 _install_stubs()
 _PKG_DIR = Path(__file__).resolve().parents[1] / "custom_components" / "pool_circulation"
@@ -158,6 +180,8 @@ _pkg = types.ModuleType("pcc")
 _pkg.__path__ = [str(_PKG_DIR)]
 sys.modules["pcc"] = _pkg
 coord_mod = importlib.import_module("pcc.coordinator")
+flow_mod = importlib.import_module("pcc.config_flow")
+init_mod = importlib.import_module("pcc.__init__")
 
 PRICES = [0.10, 0.08, 0.05, 0.06, 0.09, 0.20, 0.50, 1.20, 1.50, 1.10, 0.70, 0.60,
           0.55, 0.50, 0.45, 0.60, 0.90, 1.60, 1.80, 1.70, 1.00, 0.40, 0.30, 0.20]
@@ -170,8 +194,6 @@ CFG = {
     "switch_rpm_high": "switch.high",
     "switch_uv_lamp": "switch.uv",
     "sensor_price": "sensor.price",
-    "binary_best_price": "binary_sensor.best",
-    "binary_peak_price": "binary_sensor.peak",
     "sensor_outdoor_temp": "sensor.outdoor",
     "sensor_pool_temp": "sensor.pool",
     "cooldown_minutes": 0,
@@ -185,15 +207,13 @@ def make_hass(outdoor="3", pool="5.5"):
         hass.states.set(e, "off")
     hass.states.set("climate.hp", "heat", {"temperature": 30})
     hass.states.set("sensor.price", "0.6", {"today": PRICES})
-    hass.states.set("binary_sensor.best", "off")
-    hass.states.set("binary_sensor.peak", "off")
     hass.states.set("sensor.outdoor", outdoor)
     hass.states.set("sensor.pool", pool)
     return hass
 
 
-async def start(hass, store_winter=None):
-    entry = types.SimpleNamespace(entry_id="e1", data=dict(CFG), options={})
+async def start(hass, store_winter=None, extra=None):
+    entry = types.SimpleNamespace(entry_id="e1", data={**CFG, **(extra or {})}, options={})
     c = coord_mod.PoolCirculationCoordinator(hass, entry)
     if store_winter is not None:
         _STORE.setdefault("pool_circulation_e1", {})["winter_mode"] = store_winter
@@ -340,6 +360,125 @@ class CoordinatorTests(unittest.TestCase):
             self.assertTrue(on(hass, "switch.pump"))
             self.assertIn("climate.hp", c.data["unavailable_entities"])
         self.run_async(go())
+
+
+class FeedbackTests(unittest.TestCase):
+    """The ESP switches only show what the speed controller was told —
+    a power/rpm sensor shows what the pump really does."""
+
+    FB = {"sensor_pump_feedback": "sensor.power"}
+
+    def setUp(self):
+        _STORE.clear()
+        Clock.now = datetime(2026, 11, 13, 11, 30, tzinfo=TZ)
+
+    def run_async(self, coro):
+        return asyncio.get_event_loop().run_until_complete(coro)
+
+    async def tick(self, hass, minutes):
+        for _ in range(minutes):
+            Clock.now += timedelta(minutes=1)
+            await hass.tick(Clock.now)
+        await hass.settle()
+
+    def test_fault_when_pump_does_not_follow_and_outputs_resent(self):
+        async def go():
+            hass = make_hass()
+            hass.states.set("sensor.power", "0", {"unit_of_measurement": "W"})
+            with mock.patch("asyncio.sleep", new=mock.AsyncMock()):
+                c = await start(hass, store_winter=True, extra=self.FB)
+                self.assertTrue(on(hass, "switch.pump"))
+                await self.tick(hass, 2)
+                self.assertIsNone(c.pump_fault)           # still in grace
+                hass.calls.clear()
+                await self.tick(hass, 2)
+            self.assertEqual(c.pump_fault, "not_running")
+            faults = [d for e, d in hass.events if e == "pool_circulation_pump_fault"]
+            self.assertEqual((faults[-1]["fault"], faults[-1]["active"]), ("not_running", True))
+            # Enable pulsed off → on, speed re-sent
+            self.assertEqual(
+                [(x[1], x[2]["entity_id"]) for x in hass.calls if x[0] == "switch"],
+                [("turn_off", "switch.pump"), ("turn_on", "switch.low"), ("turn_on", "switch.pump")],
+            )
+            hass.set_state("sensor.power", "180")
+            await self.tick(hass, 1)
+            self.assertIsNone(c.pump_fault)
+            self.assertFalse(c.data["pump_fault"])
+        self.run_async(go())
+
+    def test_runtime_counts_feedback_not_switches(self):
+        async def go():
+            hass = make_hass()
+            hass.states.set("sensor.power", "0", {"unit_of_measurement": "W"})
+            with mock.patch("asyncio.sleep", new=mock.AsyncMock()):
+                c = await start(hass, store_winter=True, extra=self.FB)
+                await self.tick(hass, 10)
+                self.assertEqual(c._minutes_low, 0)
+                hass.set_state("sensor.power", "200")
+                await self.tick(hass, 10)
+            self.assertAlmostEqual(c._minutes_low, 10, delta=0.01)
+        self.run_async(go())
+
+    def test_unavailable_feedback_falls_back_to_switches(self):
+        async def go():
+            hass = make_hass()
+            hass.states.set("sensor.power", "unavailable")
+            c = await start(hass, store_winter=True, extra=self.FB)
+            await self.tick(hass, 5)
+            self.assertIsNone(c.pump_fault)
+            self.assertAlmostEqual(c._minutes_low, 5, delta=0.01)
+        self.run_async(go())
+
+    def test_speed_selected_before_controller_enabled(self):
+        async def go():
+            hass = make_hass()
+            await start(hass, store_winter=True)
+            order = [x[2]["entity_id"] for x in hass.calls if x[1] == "turn_on"]
+            self.assertLess(order.index("switch.low"), order.index("switch.pump"))
+        self.run_async(go())
+
+    def test_actual_rpm_setting_migrates_to_feedback(self):
+        async def go():
+            hass = make_hass()
+            updates = {}
+            hass.config_entries = types.SimpleNamespace(
+                async_update_entry=lambda entry, **kw: updates.update(kw))
+            entry = types.SimpleNamespace(version=1, data={"sensor_actual_rpm": "sensor.cirkulation_rpm"},
+                                          options={})
+            self.assertTrue(await init_mod.async_migrate_entry(hass, entry))
+            self.assertEqual(updates["data"], {"sensor_pump_feedback": "sensor.cirkulation_rpm"})
+            self.assertEqual(updates["version"], 2)
+        self.run_async(go())
+
+
+class ConfigFlowTests(unittest.TestCase):
+    def test_flatten_lifts_sections_and_blanks_cleared_devices(self):
+        data = flow_mod._flatten({
+            "switch_rpm_low": "switch.low", "daily_hours": 8.0,
+            "optional_devices": {"climate_heat_pump": "climate.hp"},
+            "advanced": {"winter_skip_hours": 3.0, "pool_critical_temp": 4.5},
+        })
+        self.assertEqual(data["climate_heat_pump"], "climate.hp")
+        self.assertEqual(data["switch_circulation"], "")   # cleared → stored blank
+        self.assertEqual(data["daily_hours"], 8)
+        self.assertIsInstance(data["daily_hours"], int)
+        self.assertEqual(data["pool_critical_temp"], 4.5)
+        self.assertNotIn("advanced", data)
+
+    def test_validate(self):
+        ok = {"switch_rpm_low": "a", "switch_rpm_medium": "b", "switch_rpm_high": "c",
+              "sensor_pool_temp": "p", "sensor_outdoor_temp": "o"}
+        self.assertEqual(flow_mod._validate(ok), {})
+        self.assertEqual(flow_mod._validate({**ok, "switch_rpm_high": "a"})["base"], "duplicate_speed_switch")
+        self.assertEqual(flow_mod._validate({**ok, "sensor_outdoor_temp": "p"})["base"], "same_temperature_sensor")
+
+    def test_schema_prefills_existing_install(self):
+        schema = flow_mod._schema({**CFG, "temp_algae_threshold": 8.0}, with_name=False)
+        keys = {str(k): k for k in schema}
+        self.assertEqual(keys["switch_rpm_low"].description, {"suggested_value": "switch.low"})
+        self.assertEqual(keys["temp_algae_threshold"].default, 8.0)
+        _, optional, opts = schema[keys["optional_devices"]]
+        self.assertFalse(opts["collapsed"])   # has a heat pump → shown open
 
 
 if __name__ == "__main__":

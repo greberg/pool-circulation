@@ -1,73 +1,90 @@
 """Constants for Pool Circulation integration."""
 
 DOMAIN = "pool_circulation"
-VERSION = "1.6.0"
+VERSION = "1.8.0"
 
 # ---------------------------------------------------------------------------
-# Configuration keys
+# Configuration keys — entities
 # ---------------------------------------------------------------------------
-CONF_CLIMATE_HEAT_PUMP = "climate_heat_pump"
-CONF_SWITCH_CIRCULATION = "switch_circulation"
+# Required
 CONF_SWITCH_RPM_LOW = "switch_rpm_low"
 CONF_SWITCH_RPM_MEDIUM = "switch_rpm_medium"
 CONF_SWITCH_RPM_HIGH = "switch_rpm_high"
-CONF_RPM_LOW = "rpm_low"
-CONF_RPM_MEDIUM = "rpm_medium"
-CONF_RPM_HIGH = "rpm_high"
 CONF_SENSOR_PRICE = "sensor_price"
-CONF_SENSOR_PRICE_LEVEL = "sensor_price_level"
-CONF_BINARY_BEST_PRICE = "binary_best_price"
-CONF_BINARY_PEAK_PRICE = "binary_peak_price"
-CONF_DAILY_HOURS = "daily_hours"
-CONF_DAILY_LOW_HOURS = "daily_low_hours"
-CONF_SENSOR_OUTDOOR_TEMP = "sensor_outdoor_temp"
 CONF_SENSOR_POOL_TEMP = "sensor_pool_temp"
-CONF_TEMP_ALGAE_THRESHOLD = "temp_algae_threshold"
-CONF_TEMP_FREEZE_THRESHOLD = "temp_freeze_threshold"
-CONF_TEMP_OUTDOOR_BUFFER = "temp_outdoor_buffer"   # outdoor ≤ this → algae skip suppressed
-CONF_HP_TEMP_BEST_PRICE = "hp_temp_best_price"
-CONF_HP_TEMP_NORMAL = "hp_temp_normal"
-CONF_POOL_TEMP_HEATING_THRESHOLD = "pool_temp_heating_threshold"
+CONF_SENSOR_OUTDOOR_TEMP = "sensor_outdoor_temp"
+# Optional
+CONF_SWITCH_CIRCULATION = "switch_circulation"   # separate pump on/off switch
+CONF_CLIMATE_HEAT_PUMP = "climate_heat_pump"
 CONF_SWITCH_UV_LAMP = "switch_uv_lamp"
 CONF_COVER_POOL = "cover_pool"
-CONF_EXTRA_FILTER_DURATION = "extra_filter_duration"
-CONF_SENSOR_ACTUAL_RPM = "sensor_actual_rpm"
-CONF_COOLDOWN_MINUTES = "cooldown_minutes"
-CONF_MIN_ON_MINUTES = "min_on_minutes"
+# Power (W) or rpm sensor showing whether the pump really turns. The speed
+# switches only say what the controller was told, not what the pump does.
+CONF_SENSOR_PUMP_FEEDBACK = "sensor_pump_feedback"
+
+REQUIRED_ENTITIES = (
+    CONF_SWITCH_RPM_LOW,
+    CONF_SWITCH_RPM_MEDIUM,
+    CONF_SWITCH_RPM_HIGH,
+    CONF_SENSOR_PRICE,
+    CONF_SENSOR_POOL_TEMP,
+    CONF_SENSOR_OUTDOOR_TEMP,
+)
+OPTIONAL_ENTITIES = (
+    CONF_SWITCH_CIRCULATION,
+    CONF_CLIMATE_HEAT_PUMP,
+    CONF_SWITCH_UV_LAMP,
+    CONF_COVER_POOL,
+    CONF_SENSOR_PUMP_FEEDBACK,
+)
+ALL_ENTITIES = REQUIRED_ENTITIES + OPTIONAL_ENTITIES
+
+# ---------------------------------------------------------------------------
+# Configuration keys — settings
+# ---------------------------------------------------------------------------
+CONF_DAILY_HOURS = "daily_hours"
+CONF_TEMP_ALGAE_THRESHOLD = "temp_algae_threshold"
+CONF_TEMP_FREEZE_THRESHOLD = "temp_freeze_threshold"
+# Advanced
 CONF_POOL_CRITICAL_TEMP = "pool_critical_temp"   # pool ≤ this → circulate continuously
+CONF_TEMP_OUTDOOR_BUFFER = "temp_outdoor_buffer" # upper end of the "cold" outdoor band
 CONF_WINTER_SKIP_HOURS = "winter_skip_hours"     # cold winter: priciest hours skipped
 CONF_WINTER_ALGAE_HOURS = "winter_algae_hours"   # winter, pool ≥ algae threshold
 CONF_WINTER_MIN_HOURS = "winter_min_hours"       # winter, pool cold and outdoor mild
+CONF_EXTRA_FILTER_DURATION = "extra_filter_duration"
+CONF_COOLDOWN_MINUTES = "cooldown_minutes"
+CONF_MIN_ON_MINUTES = "min_on_minutes"
+CONF_HP_TEMP_BEST_PRICE = "hp_temp_best_price"
+CONF_HP_TEMP_NORMAL = "hp_temp_normal"
+CONF_FEEDBACK_THRESHOLD = "feedback_threshold"   # feedback above this = pump running
 
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
 DEFAULT_NAME = "Pool Circulation"
 DEFAULT_DAILY_HOURS = 8
-DEFAULT_DAILY_LOW_HOURS = 0       # additional LOW-RPM hours per day (0 = disabled)
-DEFAULT_TEMP_ALGAE_THRESHOLD = 7.0        # °C — algae don't grow below this
-DEFAULT_TEMP_FREEZE_THRESHOLD = 2.0       # °C — circulate to prevent freezing
-DEFAULT_TEMP_OUTDOOR_BUFFER = 4.0         # °C — keep pump at LOW below this even if pool is cold
-DEFAULT_HP_TEMP_BEST_PRICE = 31.0         # °C — heat pump target during best price hours
-DEFAULT_HP_TEMP_NORMAL = 30.0             # °C — heat pump target during normal hours
-DEFAULT_POOL_TEMP_HEATING_THRESHOLD = 29.0  # °C — turn on heat pump if pool drops below this
-DEFAULT_RPM_LOW = 1000
-DEFAULT_RPM_MEDIUM = 2000
-DEFAULT_RPM_HIGH = 3000
-DEFAULT_EXTRA_FILTER_DURATION = 60   # minutes
-DEFAULT_COOLDOWN_MINUTES = 10        # minutes between pump off → on
-DEFAULT_MIN_ON_MINUTES = 10          # minimum minutes pump must stay on once started
-DEFAULT_POOL_CRITICAL_TEMP = 4.0     # °C — approaching 3°C the circulation can fail
+DEFAULT_TEMP_ALGAE_THRESHOLD = 7.0   # °C pool — algae don't grow below this
+DEFAULT_TEMP_FREEZE_THRESHOLD = 2.0  # °C outdoor — circulate continuously at or below
+DEFAULT_POOL_CRITICAL_TEMP = 4.0     # °C pool — approaching 3°C the circulation can fail
+DEFAULT_TEMP_OUTDOOR_BUFFER = 4.0    # °C outdoor
 DEFAULT_SAFETY_HYSTERESIS = 0.5      # °C — guards release this far above the threshold
 DEFAULT_WINTER_SKIP_HOURS = 4
 DEFAULT_WINTER_ALGAE_HOURS = 4
 DEFAULT_WINTER_MIN_HOURS = 2
+DEFAULT_EXTRA_FILTER_DURATION = 60   # minutes
+DEFAULT_COOLDOWN_MINUTES = 10        # minutes between pump off → on
+DEFAULT_MIN_ON_MINUTES = 10          # minimum minutes pump stays on once started
+DEFAULT_HP_TEMP_BEST_PRICE = 31.0    # °C — heat pump target during cheap hours
+DEFAULT_HP_TEMP_NORMAL = 30.0        # °C — heat pump target otherwise
+DEFAULT_FEEDBACK_THRESHOLD = 10.0    # W or rpm
 
-# Default entity IDs (Trulsibrunn Nordpool integration)
-DEFAULT_SENSOR_PRICE = "sensor.trulsibrunn_timpris_aktuell"
-DEFAULT_SENSOR_PRICE_LEVEL = "sensor.trulsibrunn_aktuell_timprisniva"
-DEFAULT_BINARY_BEST_PRICE = "binary_sensor.trulsibrunn_basta_prisperiod"
-DEFAULT_BINARY_PEAK_PRICE = "binary_sensor.trulsibrunn_topprisperiod"
+# Feedback must disagree with the switches this long before it counts as a fault
+# (the inverter ramps up / down), and a stuck pump is re-commanded this often.
+FEEDBACK_GRACE_SECONDS = 180
+FAULT_RETRY_MINUTES = 10
+
+# Summer: the priciest N hours of the day count as peak (no catch-up at medium)
+PEAK_HOURS = 4
 
 # ---------------------------------------------------------------------------
 # Circulation modes
@@ -86,11 +103,24 @@ SEASON_SUMMER = "summer"
 SEASON_WINTER = "winter"
 
 # ---------------------------------------------------------------------------
+# Entities this integration creates, by unique_id suffix. Anything else
+# registered for the config entry is left over from an older version and
+# removed on setup.
+# ---------------------------------------------------------------------------
+ENTITY_SUFFIXES = {
+    "sensor": ("mode", "reason", "hours_today", "hours_remaining"),
+    "binary_sensor": ("pump_fault",),
+    "switch": ("automation", "extra_filter", "winter_mode"),
+    "number": ("daily_hours", "algae_threshold", "freeze_threshold", "extra_filter_duration"),
+}
+
+# ---------------------------------------------------------------------------
 # HA events
 # ---------------------------------------------------------------------------
 EVENT_MODE_CHANGED = "pool_circulation_mode_changed"
 EVENT_UV_CHANGED = "pool_circulation_uv_changed"
 EVENT_EXTRA_FILTER_CHANGED = "pool_circulation_extra_filter_changed"
+EVENT_PUMP_FAULT = "pool_circulation_pump_fault"
 
 # ---------------------------------------------------------------------------
 # Persistent storage
@@ -101,7 +131,6 @@ STORE_KEY = "pool_circulation"
 # ---------------------------------------------------------------------------
 # Coordinator
 # ---------------------------------------------------------------------------
-COORDINATOR_UPDATE_INTERVAL = 60  # seconds
 COVER_BURST_MINUTES = 5
 SAVE_INTERVAL_MINUTES = 5          # runtime counters are persisted this often
 MAX_ACCOUNTING_GAP_SECONDS = 300   # longer gaps (HA down) are not counted as runtime
