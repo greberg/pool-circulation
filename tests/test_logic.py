@@ -35,15 +35,32 @@ def at(hour, minute=0):
 
 class SafetyTests(unittest.TestCase):
     def test_pool_critical_beats_everything_but_bursts(self):
-        d = decide(Inputs(now=at(18), season=WINTER, pool_temp=3.8, outdoor_temp=6,
+        d = decide(Inputs(now=at(18), season=WINTER, pool_temp=3.8, outdoor_temp=-3,
                           prices=PRICES, automation_enabled=False), Settings())
         self.assertEqual(d.mode, MEDIUM)
         self.assertEqual(d.safety, logic.SAFETY_POOL_CRITICAL)
         self.assertTrue(d.enforce)
 
+    def test_pool_critical_low_unless_freezing_outside(self):
+        s = Settings()
+        for outdoor, mode in ((10, LOW), (3, LOW), (0, LOW), (-0.5, MEDIUM), (-8, MEDIUM)):
+            d = decide(Inputs(now=at(12), season=WINTER, pool_temp=3.5, outdoor_temp=outdoor), s)
+            self.assertEqual((outdoor, d.mode), (outdoor, mode))
+        self.assertEqual(decide(Inputs(now=at(12), season=WINTER, pool_temp=3.5,
+                                       outdoor_temp=None), s).mode, MEDIUM)
+
+    def test_pool_critical_medium_hysteresis(self):
+        s = Settings()
+        held = decide(Inputs(now=at(12), season=WINTER, pool_temp=3.5, outdoor_temp=0.3,
+                             current_mode=MEDIUM, prev_safety=logic.SAFETY_POOL_CRITICAL), s)
+        self.assertEqual(held.mode, MEDIUM)
+        released = decide(Inputs(now=at(12), season=WINTER, pool_temp=3.5, outdoor_temp=0.6,
+                                  current_mode=MEDIUM, prev_safety=logic.SAFETY_POOL_CRITICAL), s)
+        self.assertEqual(released.mode, LOW)
+
     def test_pool_critical_in_summer_too(self):
         d = decide(Inputs(now=at(18), season=SUMMER, pool_temp=3.5, outdoor_temp=10), Settings())
-        self.assertEqual(d.mode, MEDIUM)
+        self.assertEqual((d.mode, d.safety), (LOW, logic.SAFETY_POOL_CRITICAL))
 
     def test_pool_critical_hysteresis(self):
         s = Settings()
@@ -53,12 +70,18 @@ class SafetyTests(unittest.TestCase):
         released = decide(Inputs(now=at(18), season=WINTER, pool_temp=4.6, outdoor_temp=8,
                                  prices=PRICES, prev_safety=logic.SAFETY_POOL_CRITICAL), s)
         self.assertIsNone(released.safety)
+        self.assertEqual(released.mode, OFF)
 
-    def test_frost_runs_low_even_at_peak(self):
+    def test_frost_guard_runs_low_with_cold_pool(self):
         d = decide(Inputs(now=at(18), season=WINTER, pool_temp=6, outdoor_temp=-3,
                           prices=PRICES), Settings())
         self.assertEqual((d.mode, d.safety), (LOW, logic.SAFETY_FROST))
         self.assertEqual(d.plan, [LOW] * 24)
+
+    def test_frost_guard_can_be_set_low(self):
+        d = decide(Inputs(now=at(18), season=WINTER, pool_temp=6, outdoor_temp=-3),
+                   Settings(freeze=-10))
+        self.assertEqual((d.mode, d.safety), (OFF, None))
 
     def test_frost_ignores_cooldown_and_automation_off(self):
         d = decide(Inputs(now=at(3), season=WINTER, pool_temp=6, outdoor_temp=0,
@@ -76,54 +99,49 @@ class SafetyTests(unittest.TestCase):
 
 
 class WinterTests(unittest.TestCase):
-    def test_cold_tier_skips_priciest_non_adjacent_hours(self):
-        d = decide(Inputs(now=at(2), season=WINTER, pool_temp=6, outdoor_temp=3,
-                          prices=PRICES), Settings(winter_skip_hours=4))
-        self.assertEqual(d.tier, logic.TIER_COLD)
-        skipped = [h for h, m in enumerate(d.plan) if m == OFF]
-        self.assertEqual(len(skipped), 4)
-        for a, b in zip(skipped, skipped[1:]):
-            self.assertGreater(b - a, 1, f"adjacent skips {skipped}")
-        self.assertIn(18, skipped)  # the priciest hour
+    """Winter runs by temperature only: price and time of day don't matter."""
+
+    def test_warm_pool_runs_low_all_day_at_any_price(self):
+        for h in range(24):
+            d = decide(Inputs(now=at(h), season=WINTER, pool_temp=8, outdoor_temp=6,
+                              prices=PRICES), Settings())
+            self.assertEqual((h, d.mode, d.tier, d.rule), (h, LOW, logic.TIER_ALGAE, logic.RULE_WINTER))
+        self.assertEqual(d.plan, [LOW] * 24)
+        self.assertIsNone(d.target_hours)
+
+    def test_cold_outside_with_warm_pool_still_low(self):
+        d = decide(Inputs(now=at(18), season=WINTER, pool_temp=7.5, outdoor_temp=3,
+                          prices=PRICES), Settings())
         self.assertEqual(d.mode, LOW)
 
-    def test_cold_tier_off_during_skipped_hour(self):
-        d = decide(Inputs(now=at(18), season=WINTER, pool_temp=6, outdoor_temp=3,
-                          prices=PRICES), Settings())
-        self.assertEqual(d.mode, OFF)
-
-    def test_rest_tier_runs_cheapest_hours_only(self):
-        s = Settings(winter_min_hours=2)
-        on = decide(Inputs(now=at(2), season=WINTER, pool_temp=5, outdoor_temp=8, prices=PRICES), s)
-        off = decide(Inputs(now=at(12), season=WINTER, pool_temp=5, outdoor_temp=8, prices=PRICES), s)
-        self.assertEqual(on.tier, logic.TIER_REST)
-        self.assertEqual((on.mode, off.mode), (LOW, OFF))
-        self.assertEqual(sum(1 for m in on.plan if m == LOW), 2)
-
-    def test_algae_tier_when_pool_warm(self):
-        d = decide(Inputs(now=at(1), season=WINTER, pool_temp=8, outdoor_temp=9,
-                          prices=PRICES), Settings(winter_algae_hours=4))
-        self.assertEqual(d.tier, logic.TIER_ALGAE)
-        self.assertEqual(sum(1 for m in d.plan if m == LOW), 4)
-
-    def test_winter_must_run_late_in_day(self):
-        # 23:00, nothing run yet, 2 h target, no cheap hours left → run now
-        d = decide(Inputs(now=at(22, 30), season=WINTER, pool_temp=5, outdoor_temp=8,
-                          prices=PRICES, hours_low=0), Settings(winter_min_hours=2))
-        self.assertEqual((d.mode, d.rule), (LOW, logic.RULE_MUST_RUN))
-
-    def test_winter_never_touches_medium_on_schedule(self):
-        for h in range(24):
-            d = decide(Inputs(now=at(h), season=WINTER, pool_temp=8, outdoor_temp=9,
+    def test_pool_between_critical_and_algae_is_off(self):
+        for outdoor in (3, 10):
+            d = decide(Inputs(now=at(2), season=WINTER, pool_temp=5.5, outdoor_temp=outdoor,
                               prices=PRICES), Settings())
-            self.assertIn(d.mode, (OFF, LOW))
+            self.assertEqual((d.mode, d.tier), (OFF, logic.TIER_REST))
+        self.assertEqual(d.plan, [OFF] * 24)
+
+    def test_algae_limit_hysteresis(self):
+        s = Settings()
+        held = decide(Inputs(now=at(12), season=WINTER, pool_temp=6.7, outdoor_temp=6,
+                             current_mode=LOW), s)
+        self.assertEqual(held.mode, LOW)
+        stopped = decide(Inputs(now=at(12), season=WINTER, pool_temp=6.4, outdoor_temp=6,
+                                current_mode=LOW), s)
+        self.assertEqual(stopped.mode, OFF)
+        not_started = decide(Inputs(now=at(12), season=WINTER, pool_temp=6.7, outdoor_temp=6), s)
+        self.assertEqual(not_started.mode, OFF)
 
     def test_winter_without_prices(self):
-        cold = decide(Inputs(now=at(12), season=WINTER, pool_temp=6, outdoor_temp=3), Settings())
-        self.assertEqual((cold.mode, cold.rule), (LOW, logic.RULE_REACTIVE))
-        done = decide(Inputs(now=at(12), season=WINTER, pool_temp=5, outdoor_temp=8,
-                             hours_low=3), Settings(winter_min_hours=2))
-        self.assertEqual(done.mode, OFF)
+        self.assertEqual(decide(Inputs(now=at(12), season=WINTER, pool_temp=8, outdoor_temp=3),
+                                Settings()).mode, LOW)
+        self.assertEqual(decide(Inputs(now=at(12), season=WINTER, pool_temp=5, outdoor_temp=8),
+                                Settings()).mode, OFF)
+
+    def test_winter_respects_cooldown(self):
+        d = decide(Inputs(now=at(12), season=WINTER, pool_temp=8, outdoor_temp=6,
+                          in_cooldown=True), Settings())
+        self.assertEqual((d.mode, d.rule), (OFF, logic.RULE_COOLDOWN))
 
 
 class SummerTests(unittest.TestCase):
@@ -133,10 +151,11 @@ class SummerTests(unittest.TestCase):
         dear = decide(Inputs(now=at(18), pool_temp=24, outdoor_temp=18, prices=PRICES), s)
         self.assertEqual((cheap.mode, dear.mode), (MEDIUM, LOW))
 
-    def test_algae_skip_and_buffer(self):
+    def test_algae_skip(self):
         s = Settings()
         self.assertEqual(decide(Inputs(now=at(12), pool_temp=6, outdoor_temp=10), s).mode, OFF)
-        self.assertEqual(decide(Inputs(now=at(12), pool_temp=6, outdoor_temp=3), s).mode, LOW)
+        self.assertEqual(decide(Inputs(now=at(12), pool_temp=6, outdoor_temp=3), s).mode, OFF)
+        self.assertEqual(decide(Inputs(now=at(12), pool_temp=6, outdoor_temp=1), s).mode, LOW)  # frost guard
 
     def test_must_run_respects_peak(self):
         s = Settings(daily_hours=8)

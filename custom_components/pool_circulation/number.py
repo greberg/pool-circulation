@@ -47,7 +47,7 @@ NUMBERS = (
     # Pool below this → no algae growth, no filtration hours needed
     _Spec(CONF_TEMP_ALGAE_THRESHOLD, DEFAULT_TEMP_ALGAE_THRESHOLD, "Pool Algae Threshold",
           "algae_threshold", "mdi:bacteria-outline", 2.0, 20.0, 0.5, "°C"),
-    # Outdoor at or below this → low speed continuously
+    # Frost guard: outdoor at or below this → low speed (pipes, pump, filter)
     _Spec(CONF_TEMP_FREEZE_THRESHOLD, DEFAULT_TEMP_FREEZE_THRESHOLD, "Pool Frost Threshold",
           "freeze_threshold", "mdi:snowflake-thermometer", -10.0, 8.0, 0.5, "°C"),
     _Spec(CONF_EXTRA_FILTER_DURATION, DEFAULT_EXTRA_FILTER_DURATION, "Pool Extra Filter Duration",

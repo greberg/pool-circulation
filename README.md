@@ -12,7 +12,7 @@ A Home Assistant custom component that automatically controls your pool circulat
 |---|---|
 | **Summer and winter** | Two explicit seasons with their own rules — switch with `switch.pool_winter_mode` or the season toggle on the card |
 | **Freeze guards** | Pool water near 3°C or outdoor frost → continuous circulation, regardless of price, timers or manual mode, in any season |
-| **Price-optimised** | Summer: cheapest hours at medium speed. Winter: low speed, skipping or choosing hours by price |
+| **Price-optimised summer** | Cheapest hours at medium speed. Winter runs by temperature only |
 | **Restart-safe** | Runtime, season, timers and today's prices are persisted; devices are re-checked every minute and re-applied after a controller reboot |
 | **Algae skip** | Below the algae threshold (default 7°C pool water) no filtration hours are needed |
 | **Extra filter mode** | High speed for a configurable time, survives HA restarts |
@@ -36,15 +36,15 @@ The sensor `sensor.pool_circulation_reason` always says, in plain words, why the
 
 | Guard | Condition | Pump |
 |---|---|---|
-| **Pool critical** | Pool water ≤ critical temp (default **4°C** — circulation can fail approaching 3°C) | `medium`, continuously |
-| **Frost** | Outdoor ≤ frost threshold (default **2°C**) | `low`, continuously |
+| **Pool critical** | Pool water ≤ critical temp (default **4°C** — circulation can fail approaching 3°C) | `low` continuously, `medium` when outdoor is below the medium limit (default **0°C**) |
+| **Frost guard** | Outdoor ≤ frost guard (default **2°C**) | `low`, continuously — protects pipes, pump and filter even when the pool water is not at risk. Set it very low if your plumbing is protected |
 | **Sensor failsafe** | Winter and no outdoor temperature reading | `low`, continuously |
 
 Guards ignore price, cooldown, minimum on-time and the automation switch. They release only once the reading is 0.5°C above the threshold, so the pump does not flap. Extra filter and the cover burst still win, since they run faster anyway.
 
 ### Summer
 
-1. Pool water below the algae threshold (default 7°C) → `off`, or `low` if outdoor is in the cold buffer zone (frost – 4°C)
+1. Pool water below the algae threshold (default 7°C) → `off` (the frost guard still applies)
 2. Cheapest *daily hours* (default 8) → `medium`, heat pump at its best-price target
 3. Every other hour → `low` — a warm pool is never left standing
 4. Behind on daily hours late in the day → catch up at `medium` (only `low` during the day's 4 priciest hours)
@@ -52,15 +52,17 @@ Guards ignore price, cooldown, minimum on-time and the automation switch. They r
 
 ### Winter
 
-The heat pump is left completely alone (power it down yourself). Circulation depends on the outdoor and pool temperature:
+The heat pump is left completely alone (power it down yourself). Price is ignored — circulation depends on the pool temperature only, with the safety guards above on top:
 
-| Tier | Condition | Pump |
+| Pool water | Outdoor | Pump |
 |---|---|---|
-| **Cold** | Outdoor between frost threshold and cold buffer (default 2–4°C) | `low` all day except the most expensive hours (default 4), never two skipped hours in a row |
-| **Algae** | Outdoor mild, pool ≥ algae threshold (default 7°C) | `low` during the cheapest *winter algae hours* (default 4) |
-| **Rest** | Outdoor mild, pool < algae threshold | `low` during the cheapest *winter minimum hours* (default 2) — keeps water moving and the pool sensor reading real water |
+| ≥ algae threshold (7°C) | any | `low`, around the clock |
+| between critical (4°C) and algae threshold (7°C) | above the frost guard (2°C) | `off` — no algae, no freezing risk |
+| between critical and algae threshold | ≤ frost guard | `low` (frost guard) |
+| ≤ critical (4°C) | ≥ medium limit (0°C) | `low` |
+| ≤ critical | below medium limit | `medium` |
 
-If the day's hours have not been met late in the evening, the pump catches up at `low`. Without a price list, the cold tier runs all day and the other tiers run until their hours are done.
+Each limit has 0.5°C hysteresis: a running pump stops only when the pool drops to 6.5°C, the critical guard releases at 4.5°C, and medium drops back to low at 0.5°C outdoor.
 
 ### Restarts
 
@@ -139,12 +141,12 @@ One form, used both for setup and later under **Settings → Devices & Services 
 | Pool water temperature | — | Required |
 | Outdoor temperature | — | Required |
 | Summer filtration hours per day | 8 h | Cheapest hours run at medium speed |
-| Algae threshold (pool) | 7°C | Below this no filtration hours are needed |
-| Frost threshold (outdoor) | 2°C | At or below this the pump runs continuously at low |
+| Algae threshold (pool) | 7°C | At or above: summer filters by price, winter runs low all day. Below: off |
+| Frost guard (outdoor) | 2°C | At or below this the pump runs continuously at low |
 
 **Optional devices** (collapsed): pump on/off switch, pump feedback sensor, heat pump, UV lamp, pool cover. Leave empty if you don't have them. An "actual RPM sensor" from an older version is moved here automatically.
 
-**Advanced** (collapsed): critical pool temperature (4°C), cold outdoor limit (4°C), winter skip / algae / minimum hours (4 / 4 / 2), extra filter duration (60 min), cooldown and minimum on-time (10 / 10 min), heat pump targets (31 / 30°C), pump feedback running threshold (10), pump feedback medium / high speed limits (0 = automatic by unit).
+**Advanced** (collapsed): critical pool temperature (4°C), critical pool: medium speed below outdoor (0°C), extra filter duration (60 min), cooldown and minimum on-time (10 / 10 min), heat pump targets (31 / 30°C), pump feedback running threshold (10), pump feedback medium / high speed limits (0 = automatic by unit).
 
 Changing an entity reloads the integration. Changing a setting takes effect right away without touching today's runtime.
 

@@ -1,7 +1,7 @@
 """Constants for Pool Circulation integration."""
 
 DOMAIN = "pool_circulation"
-VERSION = "1.9.0"
+VERSION = "1.10.0"
 
 # ---------------------------------------------------------------------------
 # Configuration keys — entities
@@ -47,10 +47,7 @@ CONF_TEMP_ALGAE_THRESHOLD = "temp_algae_threshold"
 CONF_TEMP_FREEZE_THRESHOLD = "temp_freeze_threshold"
 # Advanced
 CONF_POOL_CRITICAL_TEMP = "pool_critical_temp"   # pool ≤ this → circulate continuously
-CONF_TEMP_OUTDOOR_BUFFER = "temp_outdoor_buffer" # upper end of the "cold" outdoor band
-CONF_WINTER_SKIP_HOURS = "winter_skip_hours"     # cold winter: priciest hours skipped
-CONF_WINTER_ALGAE_HOURS = "winter_algae_hours"   # winter, pool ≥ algae threshold
-CONF_WINTER_MIN_HOURS = "winter_min_hours"       # winter, pool cold and outdoor mild
+CONF_TEMP_OUTDOOR_MEDIUM = "temp_outdoor_medium" # pool critical: medium below this outdoor temp
 CONF_EXTRA_FILTER_DURATION = "extra_filter_duration"
 CONF_COOLDOWN_MINUTES = "cooldown_minutes"
 CONF_MIN_ON_MINUTES = "min_on_minutes"
@@ -66,13 +63,10 @@ CONF_FEEDBACK_HIGH_FROM = "feedback_high_from"      # feedback at/above this = h
 DEFAULT_NAME = "Pool Circulation"
 DEFAULT_DAILY_HOURS = 8
 DEFAULT_TEMP_ALGAE_THRESHOLD = 7.0   # °C pool — algae don't grow below this
-DEFAULT_TEMP_FREEZE_THRESHOLD = 2.0  # °C outdoor — circulate continuously at or below
+DEFAULT_TEMP_FREEZE_THRESHOLD = 2.0  # °C outdoor — frost guard: low speed at or below
 DEFAULT_POOL_CRITICAL_TEMP = 4.0     # °C pool — approaching 3°C the circulation can fail
-DEFAULT_TEMP_OUTDOOR_BUFFER = 4.0    # °C outdoor
+DEFAULT_TEMP_OUTDOOR_MEDIUM = 0.0    # °C outdoor — pool critical runs medium below this
 DEFAULT_SAFETY_HYSTERESIS = 0.5      # °C — guards release this far above the threshold
-DEFAULT_WINTER_SKIP_HOURS = 4
-DEFAULT_WINTER_ALGAE_HOURS = 4
-DEFAULT_WINTER_MIN_HOURS = 2
 DEFAULT_EXTRA_FILTER_DURATION = 60   # minutes
 DEFAULT_COOLDOWN_MINUTES = 10        # minutes between pump off → on
 DEFAULT_MIN_ON_MINUTES = 10          # minimum minutes pump stays on once started

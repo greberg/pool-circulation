@@ -14,13 +14,13 @@
           "sensor_outdoor_temp": "Outdoor temperature",
           "daily_hours": "Summer filtration hours per day",
           "temp_algae_threshold": "Algae threshold (pool)",
-          "temp_freeze_threshold": "Frost threshold (outdoor)"
+          "temp_freeze_threshold": "Frost guard (outdoor)"
         },
         "data_description": {
           "sensor_price": "Needs today's hourly or 15-minute prices as an attribute (Nordpool, Tibber and similar).",
           "daily_hours": "Summer: the cheapest hours of the day run at medium speed.",
-          "temp_algae_threshold": "Below this pool temperature algae don't grow, so no filtration hours are needed.",
-          "temp_freeze_threshold": "At or below this outdoor temperature the pump runs continuously at low speed."
+          "temp_algae_threshold": "At or above this pool temperature algae can grow: summer filters by price, winter runs low speed around the clock. Below it the pump is off.",
+          "temp_freeze_threshold": "At or below this outdoor temperature the pump runs low speed to keep pipes, pump and filter from freezing — even when the pool itself is not at risk. Set it very low if your plumbing is protected."
         },
         "sections": {
           "optional_devices": {
@@ -45,10 +45,7 @@
             "name": "Advanced",
             "data": {
               "pool_critical_temp": "Critical pool temperature",
-              "temp_outdoor_buffer": "Cold outdoor limit",
-              "winter_skip_hours": "Winter, cold: priciest hours to skip",
-              "winter_algae_hours": "Winter, pool above algae threshold: hours per day",
-              "winter_min_hours": "Winter, cold pool: minimum hours per day",
+              "temp_outdoor_medium": "Critical pool: medium speed below (outdoor)",
               "extra_filter_duration": "Extra filter duration",
               "cooldown_minutes": "Cooldown before restarting",
               "min_on_minutes": "Minimum on-time",
@@ -59,8 +56,8 @@
               "feedback_high_from": "Pump feedback: high speed from"
             },
             "data_description": {
-              "pool_critical_temp": "At or below this the pump runs continuously at medium, in any season.",
-              "temp_outdoor_buffer": "Winter: between the frost threshold and this, run low speed most hours.",
+              "pool_critical_temp": "At or below this pool temperature the pump runs continuously, in any season: low speed, or medium when it is colder outside than the limit below.",
+              "temp_outdoor_medium": "When the pool is at or below the critical temperature and it is colder than this outside, run medium instead of low.",
               "feedback_threshold": "Feedback values above this count as running (W or rpm, default 10).",
               "feedback_medium_from": "Feedback at or above this counts as medium speed. 0 = automatic: 300 W or 2000 rpm.",
               "feedback_high_from": "Feedback at or above this counts as high speed. 0 = automatic: 500 W or 2650 rpm."
@@ -90,13 +87,13 @@
           "sensor_outdoor_temp": "Outdoor temperature",
           "daily_hours": "Summer filtration hours per day",
           "temp_algae_threshold": "Algae threshold (pool)",
-          "temp_freeze_threshold": "Frost threshold (outdoor)"
+          "temp_freeze_threshold": "Frost guard (outdoor)"
         },
         "data_description": {
           "sensor_price": "Needs today's hourly or 15-minute prices as an attribute (Nordpool, Tibber and similar).",
           "daily_hours": "Summer: the cheapest hours of the day run at medium speed.",
-          "temp_algae_threshold": "Below this pool temperature algae don't grow, so no filtration hours are needed.",
-          "temp_freeze_threshold": "At or below this outdoor temperature the pump runs continuously at low speed."
+          "temp_algae_threshold": "At or above this pool temperature algae can grow: summer filters by price, winter runs low speed around the clock. Below it the pump is off.",
+          "temp_freeze_threshold": "At or below this outdoor temperature the pump runs low speed to keep pipes, pump and filter from freezing — even when the pool itself is not at risk. Set it very low if your plumbing is protected."
         },
         "sections": {
           "optional_devices": {
@@ -121,10 +118,7 @@
             "name": "Advanced",
             "data": {
               "pool_critical_temp": "Critical pool temperature",
-              "temp_outdoor_buffer": "Cold outdoor limit",
-              "winter_skip_hours": "Winter, cold: priciest hours to skip",
-              "winter_algae_hours": "Winter, pool above algae threshold: hours per day",
-              "winter_min_hours": "Winter, cold pool: minimum hours per day",
+              "temp_outdoor_medium": "Critical pool: medium speed below (outdoor)",
               "extra_filter_duration": "Extra filter duration",
               "cooldown_minutes": "Cooldown before restarting",
               "min_on_minutes": "Minimum on-time",
@@ -135,8 +129,8 @@
               "feedback_high_from": "Pump feedback: high speed from"
             },
             "data_description": {
-              "pool_critical_temp": "At or below this the pump runs continuously at medium, in any season.",
-              "temp_outdoor_buffer": "Winter: between the frost threshold and this, run low speed most hours.",
+              "pool_critical_temp": "At or below this pool temperature the pump runs continuously, in any season: low speed, or medium when it is colder outside than the limit below.",
+              "temp_outdoor_medium": "When the pool is at or below the critical temperature and it is colder than this outside, run medium instead of low.",
               "feedback_threshold": "Feedback values above this count as running (W or rpm, default 10).",
               "feedback_medium_from": "Feedback at or above this counts as medium speed. 0 = automatic: 300 W or 2000 rpm.",
               "feedback_high_from": "Feedback at or above this counts as high speed. 0 = automatic: 500 W or 2650 rpm."

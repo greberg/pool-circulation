@@ -9,7 +9,7 @@
  * automatically when omitted — and an optional `title:`.
  */
 
-const CARD_VERSION = "1.9.0";
+const CARD_VERSION = "1.10.0";
 
 const MODE = {
   off: { label: "Off", color: "var(--pc-off)" },
@@ -31,9 +31,8 @@ const FAULT = {
 };
 
 const TIER = {
-  cold: "Cold outdoor — low speed, priciest hours skipped",
-  algae: "Pool above algae limit — cheapest hours",
-  rest: "Winter rest — cheapest hours to keep water moving",
+  algae: "Winter — pool above algae limit, low speed all day",
+  rest: "Winter — pool cold enough, pump off",
 };
 
 const BASE_CSS = `
@@ -209,11 +208,12 @@ class PoolCirculationCard extends PoolCardBase {
       [t.algae, "var(--pc-winter)"],
       [poolMax, "var(--pc-ok)"],
     ], [[t.pool_critical, "critical"], [t.algae, "algae"]]);
-    const outScale = this._scale(a.outdoor_temp, outMin, outMax, [
-      [t.freeze, "var(--pc-winter)"],
-      [t.buffer, "var(--pc-warn)"],
-      [outMax, "var(--pc-ok)"],
-    ], [[t.freeze, "frost"], [t.buffer, "cold"]]);
+    // Below "medium" a critical pool runs medium; at or below "frost" the frost guard runs low
+    const outMarks = [[t.outdoor_medium, "medium", "var(--pc-warn)"], [t.freeze, "frost", "var(--pc-winter)"]]
+      .filter(([v]) => v !== null && v !== undefined).sort((x, y) => x[0] - y[0]);
+    const outScale = this._scale(a.outdoor_temp, outMin, outMax,
+      [...outMarks.map(([v, , c]) => [v, c]), [outMax, "var(--pc-ok)"]],
+      outMarks.map(([v, label]) => [v, label]));
 
     let today;
     if (target === null || target === undefined) {

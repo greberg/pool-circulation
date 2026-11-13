@@ -7,22 +7,20 @@ Seasons
 -------
 Summer — filtration + heat pump. Cheapest ``daily_hours`` at MEDIUM, the pump
 never stops while the pool is warm enough for algae (≥ algae threshold).
+Below the algae threshold it is off.
 
-Winter — heat pump left alone, circulation only to stay safe and clean:
-  cold   outdoor ≤ buffer (default 4 °C): run LOW all day except the most
-         expensive hours, never two skipped hours in a row
-  algae  outdoor mild, pool ≥ algae threshold (default 7 °C): cheapest
-         ``winter_algae_hours`` at LOW
-  rest   outdoor mild, pool cold: cheapest ``winter_min_hours`` at LOW, just to
-         keep water moving and the pool sensor reading real water
+Winter — heat pump left alone, price ignored, circulation by temperature only:
+  algae  pool ≥ algae threshold (default 7 °C) → LOW around the clock
+  rest   pool between the critical temp and the algae threshold → OFF
 
-Safety guards (both seasons, override price and automation-off)
----------------------------------------------------------------
-pool_critical  pool ≤ critical temp (default 4 °C) → MEDIUM continuously
-frost          outdoor ≤ freeze threshold (default 2 °C) → LOW continuously
-sensor_failsafe winter with no outdoor reading → LOW continuously
-Both temperature guards release only once the reading is ``hysteresis`` above
-the threshold, so the pump does not flap around the limit.
+Safety guards (both seasons, override price, timers and automation-off)
+-----------------------------------------------------------------------
+pool_critical   pool ≤ critical temp (default 4 °C) → LOW, or MEDIUM when
+                outdoor is below ``outdoor_medium`` (default 0 °C)
+frost           outdoor ≤ freeze threshold (default 2 °C) → LOW, protects
+                pipes, pump and filter while the pool itself is not at risk
+sensor_failsafe winter with no outdoor reading → LOW
+Every limit has ``hysteresis`` so the pump does not flap around it.
 """
 from __future__ import annotations
 
@@ -32,7 +30,6 @@ from datetime import datetime
 from .const import MODE_HIGH, MODE_LOW, MODE_MEDIUM, MODE_OFF, PEAK_HOURS, SEASON_SUMMER, SEASON_WINTER
 
 INF = float("inf")
-RUNNING = (MODE_LOW, MODE_MEDIUM, MODE_HIGH)
 
 # Safety states
 SAFETY_POOL_CRITICAL = "pool_critical"
@@ -40,7 +37,6 @@ SAFETY_FROST = "frost"
 SAFETY_SENSOR_FAILSAFE = "sensor_failsafe"
 
 # Winter tiers
-TIER_COLD = "cold"
 TIER_ALGAE = "algae"
 TIER_REST = "rest"
 
@@ -50,7 +46,7 @@ RULE_COVER_BURST = "cover_burst"
 RULE_MANUAL = "manual"
 RULE_MIN_ON = "min_on"
 RULE_ALGAE_SKIP = "algae_skip"
-RULE_OUTDOOR_BUFFER = "outdoor_buffer"
+RULE_WINTER = "winter"
 RULE_MUST_RUN = "must_run"
 RULE_MUST_RUN_PEAK = "must_run_peak"
 RULE_SCHEDULE = "schedule"
@@ -65,11 +61,8 @@ class Settings:
     hysteresis: float = 0.5
     algae: float = 7.0
     freeze: float = 2.0
-    buffer: float = 4.0
+    outdoor_medium: float = 0.0            # pool critical: MEDIUM below this outdoor temp
     daily_hours: int = 8
-    winter_skip_hours: int = 4
-    winter_algae_hours: int = 4
-    winter_min_hours: int = 2
 
 
 @dataclass
@@ -123,41 +116,30 @@ def safety_state(inp: Inputs, s: Settings) -> str | None:
     return None
 
 
-SAFETY_MODE = {
-    SAFETY_POOL_CRITICAL: MODE_MEDIUM,
-    SAFETY_FROST: MODE_LOW,
-    SAFETY_SENSOR_FAILSAFE: MODE_LOW,
-}
+def safety_mode(inp: Inputs, s: Settings, safety: str) -> str:
+    """Speed for an active safety guard."""
+    if safety != SAFETY_POOL_CRITICAL:
+        return MODE_LOW
+    if inp.outdoor_temp is None:
+        return MODE_MEDIUM                 # can't tell how cold it is — be safe
+    # Stay at MEDIUM until outdoor is hysteresis above the limit
+    limit = s.outdoor_medium + (s.hysteresis if inp.current_mode == MODE_MEDIUM else 0)
+    return MODE_MEDIUM if inp.outdoor_temp < limit else MODE_LOW
 
 
 def winter_tier(inp: Inputs, s: Settings) -> str:
-    if inp.outdoor_temp is not None and inp.outdoor_temp <= s.buffer:
-        return TIER_COLD
     # Unknown pool temp → assume algae is possible (circulate more, not less)
-    if inp.pool_temp is None or inp.pool_temp >= s.algae:
+    if inp.pool_temp is None:
         return TIER_ALGAE
-    return TIER_REST
+    # Keep running until the pool is hysteresis below the threshold
+    limit = s.algae - (s.hysteresis if inp.current_mode != MODE_OFF else 0)
+    return TIER_ALGAE if inp.pool_temp >= limit else TIER_REST
 
 
 def cheapest_hours(prices: list[float], n: int, exclude: set[int] | None = None) -> set[int]:
     exclude = exclude or set()
     ranked = sorted((h for h in range(24) if h not in exclude), key=lambda h: prices[h])
     return set(ranked[:max(0, n)])
-
-
-def expensive_skips(prices: list[float], k: int) -> set[int]:
-    """Pick up to *k* most expensive hours to skip, never two in a row.
-
-    Hours with unknown price (∞) are never skipped — when in doubt, run.
-    """
-    skipped: set[int] = set()
-    for h in sorted((h for h in range(24) if prices[h] < INF), key=lambda h: -prices[h]):
-        if len(skipped) >= k:
-            break
-        if (h - 1) in skipped or (h + 1) in skipped:
-            continue
-        skipped.add(h)
-    return skipped
 
 
 def is_peak_hour(prices: list[float] | None, hour: int) -> bool:
@@ -172,36 +154,27 @@ def summer_algae_skip(inp: Inputs, s: Settings) -> bool:
     return inp.pool_temp is not None and inp.pool_temp < s.algae
 
 
-def outdoor_buffer_active(inp: Inputs, s: Settings) -> bool:
-    return inp.outdoor_temp is not None and s.freeze < inp.outdoor_temp <= s.buffer
-
-
 def plan_today(inp: Inputs, s: Settings, safety: str | None, tier: str | None) -> list[str] | None:
     """Planned mode for each hour of today under current conditions.
 
     Returns None when the plan depends on prices that are not available.
     """
     if safety:
-        return [SAFETY_MODE[safety]] * 24
+        return [safety_mode(inp, s, safety)] * 24
 
-    if inp.season == SEASON_SUMMER and summer_algae_skip(inp, s):
-        return [MODE_LOW if outdoor_buffer_active(inp, s) else MODE_OFF] * 24
+    if inp.season == SEASON_WINTER:
+        return [MODE_LOW if tier == TIER_ALGAE else MODE_OFF] * 24
+
+    if summer_algae_skip(inp, s):
+        return [MODE_OFF] * 24
 
     prices = inp.prices
     if not prices or len(prices) < 24:
         return None
 
-    if inp.season == SEASON_SUMMER:
-        medium = cheapest_hours(prices, s.daily_hours)
-        # Pool warm → never off, so every non-MEDIUM hour is LOW
-        return [MODE_MEDIUM if h in medium else MODE_LOW for h in range(24)]
-
-    if tier == TIER_COLD:
-        skipped = expensive_skips(prices, s.winter_skip_hours)
-        return [MODE_OFF if h in skipped else MODE_LOW for h in range(24)]
-    n = s.winter_algae_hours if tier == TIER_ALGAE else s.winter_min_hours
-    run = cheapest_hours(prices, n)
-    return [MODE_LOW if h in run else MODE_OFF for h in range(24)]
+    medium = cheapest_hours(prices, s.daily_hours)
+    # Pool warm → never off, so every non-MEDIUM hour is LOW
+    return [MODE_MEDIUM if h in medium else MODE_LOW for h in range(24)]
 
 
 def classify_speed(
@@ -237,15 +210,14 @@ def decide(inp: Inputs, s: Settings) -> Decision:
     hour = inp.now.hour
     hour_frac = inp.now.minute / 60
 
-    # Daily target bookkeeping
+    # Daily target bookkeeping — summer only, winter runs by temperature
     if winter:
-        target = {TIER_ALGAE: s.winter_algae_hours, TIER_REST: s.winter_min_hours}.get(tier)
+        target = None
         done = inp.hours_run + inp.hours_low
-        counted = RUNNING
     else:
         target = s.daily_hours
         done = inp.hours_run
-        counted = (MODE_MEDIUM, MODE_HIGH)
+    counted = (MODE_MEDIUM, MODE_HIGH)
 
     def result(mode: str, rule: str, reason: str, enforce: bool = True, must_run: bool = False) -> Decision:
         return Decision(
@@ -262,13 +234,16 @@ def decide(inp: Inputs, s: Settings) -> Decision:
 
     # 3. Safety guards — ignore price, timers and automation-off
     if safety == SAFETY_POOL_CRITICAL:
-        return result(MODE_MEDIUM, safety,
-                      f"Pool water {_fmt(inp.pool_temp)} ≤ {_fmt(s.pool_critical)} — "
-                      "continuous circulation to prevent freezing")
+        mode = safety_mode(inp, s, safety)
+        cold = (f"outdoor {_fmt(inp.outdoor_temp)} below {_fmt(s.outdoor_medium)}"
+                if mode == MODE_MEDIUM else f"outdoor {_fmt(inp.outdoor_temp)}")
+        return result(mode, safety,
+                      f"Pool water {_fmt(inp.pool_temp)} ≤ {_fmt(s.pool_critical)}, {cold} — "
+                      f"continuous {mode} speed to prevent freezing")
     if safety == SAFETY_FROST:
         return result(MODE_LOW, safety,
-                      f"Frost: outdoor {_fmt(inp.outdoor_temp)} ≤ {_fmt(s.freeze)} — "
-                      "continuous low-speed circulation")
+                      f"Frost guard: outdoor {_fmt(inp.outdoor_temp)} ≤ {_fmt(s.freeze)} — "
+                      "low speed to keep pipes and pump from freezing")
     if safety == SAFETY_SENSOR_FAILSAFE:
         return result(MODE_LOW, safety,
                       "Winter and no outdoor temperature — running low speed to be safe")
@@ -281,16 +256,26 @@ def decide(inp: Inputs, s: Settings) -> Decision:
     if inp.current_mode != MODE_OFF and inp.in_min_on:
         return result(inp.current_mode, RULE_MIN_ON, "Holding until minimum on-time has passed")
 
-    # 6. Summer algae gate — cold pool needs no filtration
-    if not winter and summer_algae_skip(inp, s):
-        if outdoor_buffer_active(inp, s):
-            return result(MODE_LOW, RULE_OUTDOOR_BUFFER,
-                          f"Pool {_fmt(inp.pool_temp)} below algae limit, outdoor "
-                          f"{_fmt(inp.outdoor_temp)} near frost — low speed")
+    # 6. Winter — by pool temperature only
+    if winter:
+        if tier == TIER_ALGAE:
+            desired = MODE_LOW
+            reason = (f"Winter, pool {_fmt(inp.pool_temp)} ≥ algae limit {_fmt(s.algae)} — "
+                      "low speed around the clock")
+        else:
+            desired = MODE_OFF
+            reason = (f"Winter, pool {_fmt(inp.pool_temp)} between {_fmt(s.pool_critical)} and "
+                      f"{_fmt(s.algae)} — no algae, no freezing risk: off")
+        if desired != MODE_OFF and inp.current_mode == MODE_OFF and inp.in_cooldown:
+            return result(MODE_OFF, RULE_COOLDOWN, "Waiting for cooldown before restarting")
+        return result(desired, RULE_WINTER, reason)
+
+    # 7. Summer algae gate — cold pool needs no filtration
+    if summer_algae_skip(inp, s):
         return result(MODE_OFF, RULE_ALGAE_SKIP,
                       f"Pool {_fmt(inp.pool_temp)} below algae limit {_fmt(s.algae)} — no filtration needed")
 
-    # 7. Must-run — the rest of the plan cannot cover what is still needed today
+    # 8. Must-run — the rest of the plan cannot cover what is still needed today
     must_run = False
     if target is not None:
         needed = max(0.0, target - done)
@@ -304,9 +289,7 @@ def decide(inp: Inputs, s: Settings) -> Decision:
         must_run = gap > 0.01 and gap >= remaining - 0.01
 
     if must_run:
-        if winter:
-            desired, rule, reason = MODE_LOW, RULE_MUST_RUN, "Catching up on today's winter circulation hours"
-        elif is_peak_hour(inp.prices, hour):
+        if is_peak_hour(inp.prices, hour):
             desired, rule, reason = (MODE_LOW, RULE_MUST_RUN_PEAK,
                                      "Behind on daily hours but peak price — low speed only")
         else:
@@ -314,32 +297,21 @@ def decide(inp: Inputs, s: Settings) -> Decision:
     elif plan is not None:
         desired = plan[hour]
         rule = RULE_SCHEDULE
-        if winter:
-            label = {
-                TIER_COLD: f"Winter, cold outdoor {_fmt(inp.outdoor_temp)}: low speed, skipping priciest hours",
-                TIER_ALGAE: f"Winter, pool {_fmt(inp.pool_temp)} ≥ algae limit: cheapest {s.winter_algae_hours} h",
-                TIER_REST: f"Winter rest: cheapest {s.winter_min_hours} h to keep water moving",
-            }[tier]
-            reason = f"{label} — {'running' if desired != MODE_OFF else 'off'} this hour"
-        else:
-            reason = ("Cheap hour — daily filtration at medium speed" if desired == MODE_MEDIUM
-                      else "Outside cheapest hours — low speed")
+        reason = ("Cheap hour — daily filtration at medium speed" if desired == MODE_MEDIUM
+                  else "Outside cheapest hours — low speed")
     else:
         # No price list today — run until today's hours are done
         rule = RULE_REACTIVE
         needed = max(0.0, (target or 0) - done)
-        if winter:
-            desired = MODE_LOW if tier == TIER_COLD or needed > 0 else MODE_OFF
-        else:
-            desired = MODE_MEDIUM if needed > 0 else MODE_LOW
+        desired = MODE_MEDIUM if needed > 0 else MODE_LOW
         reason = "No price list — running until today's hours are done"
 
-    # 8. Cooldown — don't restart right after stopping
+    # 9. Cooldown — don't restart right after stopping
     if desired != MODE_OFF and inp.current_mode == MODE_OFF and inp.in_cooldown:
         desired, rule, reason = MODE_OFF, RULE_COOLDOWN, "Waiting for cooldown before restarting"
 
-    # 9. Summer: warm pool never stands still
-    if not winter and desired == MODE_OFF:
+    # 10. Summer: warm pool never stands still
+    if desired == MODE_OFF:
         desired, rule, reason = MODE_LOW, RULE_MIN_LOW, "Pool warm — never fully off, low speed"
 
     return result(desired, rule, reason, must_run=must_run)

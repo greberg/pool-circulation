@@ -201,7 +201,7 @@ CFG = {
 }
 
 
-def make_hass(outdoor="3", pool="5.5"):
+def make_hass(outdoor="3", pool="8"):
     hass = FakeHass()
     for e in ("switch.pump", "switch.low", "switch.medium", "switch.high", "switch.uv"):
         hass.states.set(e, "off")
@@ -234,15 +234,16 @@ class CoordinatorTests(unittest.TestCase):
     def run_async(self, coro):
         return asyncio.get_event_loop().run_until_complete(coro)
 
-    def test_winter_cold_runs_low_and_leaves_heat_pump_alone(self):
+    def test_winter_warm_pool_runs_low_and_leaves_heat_pump_alone(self):
         async def go():
-            hass = make_hass(outdoor="3", pool="5.5")
+            hass = make_hass(outdoor="3", pool="8")
             c = await start(hass, store_winter=True)
             self.assertEqual(c.current_mode, "low")
             self.assertTrue(on(hass, "switch.pump") and on(hass, "switch.low"))
             self.assertFalse(on(hass, "switch.medium"))
             self.assertFalse([x for x in hass.calls if x[0] == "climate"])
-            self.assertEqual(c.data["winter_tier"], "cold")
+            self.assertEqual(c.data["winter_tier"], "algae")
+            self.assertIsNone(c.data["target_hours"])
         self.run_async(go())
 
     def test_controller_reboot_is_reconciled_immediately(self):
@@ -318,7 +319,7 @@ class CoordinatorTests(unittest.TestCase):
 
     def test_pool_critical_overrides_manual(self):
         async def go():
-            hass = make_hass(outdoor="5", pool="6")
+            hass = make_hass(outdoor="-2", pool="6")
             c = await start(hass, store_winter=True)
             await c.async_set_automation(False)
             hass.set_state("sensor.pool", "3.6")
@@ -326,6 +327,23 @@ class CoordinatorTests(unittest.TestCase):
             self.assertEqual(c.current_mode, "medium")
             self.assertTrue(on(hass, "switch.medium"))
             self.assertEqual(c.data["safety"], "pool_critical")
+        self.run_async(go())
+
+    def test_winter_pool_between_limits_stops_pump(self):
+        async def go():
+            hass = make_hass(outdoor="5", pool="5.5")
+            c = await start(hass, store_winter=True)
+            self.assertEqual(c.current_mode, "off")
+            self.assertFalse(on(hass, "switch.pump") or on(hass, "switch.low"))
+            hass.set_state("sensor.outdoor", "1")          # frost guard
+            await hass.settle()
+            self.assertEqual(c.current_mode, "low")
+            hass.set_state("sensor.pool", "3.8")           # critical, outdoor ≥ 0
+            await hass.settle()
+            self.assertEqual(c.current_mode, "low")
+            hass.set_state("sensor.outdoor", "-1")
+            await hass.settle()
+            self.assertEqual(c.current_mode, "medium")
         self.run_async(go())
 
     def test_summer_heat_pump_only_commanded_on_change(self):
@@ -515,7 +533,7 @@ class ConfigFlowTests(unittest.TestCase):
         data = flow_mod._flatten({
             "switch_rpm_low": "switch.low", "daily_hours": 8.0,
             "optional_devices": {"climate_heat_pump": "climate.hp"},
-            "advanced": {"winter_skip_hours": 3.0, "pool_critical_temp": 4.5},
+            "advanced": {"temp_outdoor_medium": -1.0, "pool_critical_temp": 4.5},
         })
         self.assertEqual(data["climate_heat_pump"], "climate.hp")
         self.assertEqual(data["switch_circulation"], "")   # cleared → stored blank
