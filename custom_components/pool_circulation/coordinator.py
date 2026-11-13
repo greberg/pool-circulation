@@ -1,266 +1,181 @@
-"""Coordinator for Pool Circulation integration."""
+"""Coordinator for Pool Circulation integration.
+
+Owns all state and talks to Home Assistant. The actual decision of which mode
+to run is made by the pure ``logic.decide()`` — this class gathers inputs,
+applies the result to the devices and keeps everything consistent across
+restarts:
+
+- Every minute (and immediately on relevant sensor changes) the mode is
+  re-decided and the devices are *reconciled*: each switch is compared with
+  the wanted state and only mismatches are commanded. A pump controller that
+  reboots and comes back "off" is turned back on within a minute.
+- Runtime is accounted from elapsed time while the pump switch is actually on,
+  persisted every few minutes. Time while HA was down is never counted.
+- Extra filter and cover burst are stored as end timestamps, so they survive
+  a restart and simply expire on time.
+- Temperature safety guards (hysteresis state), season and last good price
+  list are persisted too.
+"""
 from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import (
     async_track_state_change_event,
     async_track_time_change,
 )
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_BINARY_BEST_PRICE,
     CONF_BINARY_PEAK_PRICE,
     CONF_CLIMATE_HEAT_PUMP,
     CONF_COOLDOWN_MINUTES,
-    CONF_MIN_ON_MINUTES,
     CONF_COVER_POOL,
     CONF_DAILY_HOURS,
     CONF_DAILY_LOW_HOURS,
     CONF_EXTRA_FILTER_DURATION,
+    CONF_HP_TEMP_BEST_PRICE,
+    CONF_HP_TEMP_NORMAL,
+    CONF_MIN_ON_MINUTES,
+    CONF_POOL_CRITICAL_TEMP,
+    CONF_RPM_HIGH,
+    CONF_RPM_LOW,
+    CONF_RPM_MEDIUM,
     CONF_SENSOR_ACTUAL_RPM,
     CONF_SENSOR_OUTDOOR_TEMP,
     CONF_SENSOR_POOL_TEMP,
     CONF_SENSOR_PRICE,
     CONF_SENSOR_PRICE_LEVEL,
     CONF_SWITCH_CIRCULATION,
-    CONF_SWITCH_UV_LAMP,
-    CONF_RPM_HIGH,
-    CONF_RPM_LOW,
-    CONF_RPM_MEDIUM,
     CONF_SWITCH_RPM_HIGH,
     CONF_SWITCH_RPM_LOW,
     CONF_SWITCH_RPM_MEDIUM,
+    CONF_SWITCH_UV_LAMP,
     CONF_TEMP_ALGAE_THRESHOLD,
     CONF_TEMP_FREEZE_THRESHOLD,
     CONF_TEMP_OUTDOOR_BUFFER,
-    CONF_HP_TEMP_BEST_PRICE,
-    CONF_HP_TEMP_NORMAL,
-    CONF_POOL_TEMP_HEATING_THRESHOLD,
-    COORDINATOR_UPDATE_INTERVAL,
+    CONF_WINTER_ALGAE_HOURS,
+    CONF_WINTER_MIN_HOURS,
+    CONF_WINTER_SKIP_HOURS,
+    COVER_BURST_MINUTES,
     DEFAULT_COOLDOWN_MINUTES,
-    DEFAULT_MIN_ON_MINUTES,
     DEFAULT_DAILY_HOURS,
     DEFAULT_DAILY_LOW_HOURS,
     DEFAULT_EXTRA_FILTER_DURATION,
     DEFAULT_HP_TEMP_BEST_PRICE,
     DEFAULT_HP_TEMP_NORMAL,
-    DEFAULT_POOL_TEMP_HEATING_THRESHOLD,
+    DEFAULT_MIN_ON_MINUTES,
+    DEFAULT_POOL_CRITICAL_TEMP,
     DEFAULT_RPM_HIGH,
     DEFAULT_RPM_LOW,
     DEFAULT_RPM_MEDIUM,
+    DEFAULT_SAFETY_HYSTERESIS,
     DEFAULT_TEMP_ALGAE_THRESHOLD,
     DEFAULT_TEMP_FREEZE_THRESHOLD,
     DEFAULT_TEMP_OUTDOOR_BUFFER,
+    DEFAULT_WINTER_ALGAE_HOURS,
+    DEFAULT_WINTER_MIN_HOURS,
+    DEFAULT_WINTER_SKIP_HOURS,
     DOMAIN,
     EVENT_EXTRA_FILTER_CHANGED,
     EVENT_MODE_CHANGED,
     EVENT_UV_CHANGED,
+    MAX_ACCOUNTING_GAP_SECONDS,
     MODE_HIGH,
     MODE_LOW,
     MODE_MEDIUM,
     MODE_OFF,
+    SAVE_INTERVAL_MINUTES,
+    SEASON_SUMMER,
+    SEASON_WINTER,
     STORE_KEY,
     STORE_VERSION,
 )
+from .logic import INF, Decision, Inputs, Settings, decide
+from .prices import describe_attrs, extract_today_prices
 
 _LOGGER = logging.getLogger(__name__)
 
+_UNAVAILABLE = ("unavailable", "unknown", "")
+# Give temperature sensors this long after HA start before deciding without them
+_STARTUP_GRACE_SECONDS = 120
 
-def _ts_to_hour(ts: str) -> int:
-    """Extract the local hour (0-23) from an ISO-8601 timestamp string."""
-    # "2026-05-11T14:00:00+02:00"  or  "2026-05-11 14:00:00"
-    try:
-        for sep in ("T", " "):
-            if sep in ts:
-                return int(ts.split(sep)[1][:2])
-    except (ValueError, IndexError):
-        pass
-    return 0
+# Entities of this integration the cards need, by unique_id suffix
+_OWN_ENTITIES = {
+    "mode": ("sensor", "mode"),
+    "rpm": ("sensor", "rpm"),
+    "reason": ("sensor", "reason"),
+    "winter_mode": ("switch", "winter_mode"),
+    "automation": ("switch", "automation"),
+    "extra_filter": ("switch", "extra_filter"),
+}
 
 
-def _parse_price_list(raw: list, source_attr: str, today_str: str | None = None) -> list[float] | None:
-    """Try to extract exactly 24 hourly floats from a raw attribute list.
-
-    When *today_str* is supplied (ISO date, e.g. "2026-05-11") dict lists are
-    filtered to entries whose timestamp starts with that date before slicing to
-    24 entries — this handles multi-day attributes like ``prices`` (48 entries
-    spanning today + tomorrow).
-
-    Pads any short result with infinity so missing hours are never scheduled.
-    """
+def _parse_ts(raw: str | None) -> datetime | None:
+    """Parse a stored timestamp; naive values (pre-1.6 storage) are local time."""
     if not raw:
         return None
-
-    first = raw[0]
-
-    # ── plain floats / ints ──────────────────────────────────────────────────
-    if isinstance(first, (int, float)):
-        try:
-            prices = [float(v) for v in raw]
-        except (TypeError, ValueError):
-            return None
-        if len(prices) < 24:
-            _LOGGER.debug(
-                "Day-ahead: '%s' has %d entries — padding missing hours with ∞",
-                source_attr, len(prices),
-            )
-        return (prices + [float("inf")] * 24)[:24]
-
-    # ── list of dicts ────────────────────────────────────────────────────────
-    if isinstance(first, dict):
-        _LOGGER.debug(
-            "Day-ahead: '%s' is a dict list, keys=%s", source_attr, sorted(first.keys())
-        )
-        # Supported timestamp keys (for sorting and date-filtering)
-        ts_key = next(
-            (k for k in ("start_time", "startsAt", "start", "starts_at", "time", "hour_start")
-             if k in first),
-            None,
-        )
-        # Supported price keys — ordered by preference
-        for price_key in ("price", "total", "price_per_kwh", "energy", "value", "cost", "amount"):
-            if price_key not in first:
-                continue
-            try:
-                entries: list = list(raw)
-                # Filter to today's date when the list spans multiple days
-                if today_str and ts_key:
-                    entries = [e for e in entries if str(e.get(ts_key, "")).startswith(today_str)]
-                # Sort by timestamp so DST or out-of-order data doesn't scramble hours
-                if ts_key:
-                    entries = sorted(entries, key=lambda e, _k=ts_key: _ts_to_hour(str(e.get(_k, ""))))
-                if not entries:
-                    continue
-                prices = [float(e[price_key]) for e in entries[:24]]
-                if len(prices) < 24:
-                    _LOGGER.debug(
-                        "Day-ahead: '%s[%s]' has %d entries after filtering — padding",
-                        source_attr, price_key, len(prices),
-                    )
-                return (prices + [float("inf")] * 24)[:24]
-            except (KeyError, TypeError, ValueError):
-                continue
-
-    return None
+    try:
+        ts = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
+    return ts
 
 
-def _extract_today_prices(attrs: dict) -> list[float] | None:
-    """Extract a 24-float hourly price list from a price sensor's attributes.
-
-    Supports:
-    - ``today``     : 24 plain floats (Nordpool HACS, Tibber official)
-    - ``prices``    : 48 dicts {start_time, price} — today + tomorrow combined
-    - ``data``      : 48 dicts {start_time, price_per_kwh} — today + tomorrow
-    - ``raw_today`` : dicts {value} (some Nordpool versions)
-    - and several other naming variants
-
-    Multi-day dict lists are date-filtered to today before slicing.
-    """
-    today_str = datetime.now().date().isoformat()
-
-    # Ordered by reliability: plain 24-float list first, then dict variants
-    candidates = [
-        ("today",        False),   # 24 plain floats — most reliable, no date filter needed
-        ("raw_today",    False),   # Nordpool alternative (dicts with 'value')
-        ("prices",       True),    # 48 dicts {start_time, price} — must date-filter
-        ("data",         True),    # 48 dicts {start_time, price_per_kwh} — must date-filter
-        ("today_prices", False),
-        ("prices_today", False),
-        ("hourly_prices", False),
-        ("current_day",  False),
-        ("today_data",   False),
-    ]
-
-    for attr, needs_date_filter in candidates:
-        raw = attrs.get(attr)
-        if not raw or not isinstance(raw, (list, tuple)):
-            continue
-        result = _parse_price_list(raw, attr, today_str if needs_date_filter else None)
-        if result is not None:
-            real = sum(1 for p in result if p < float("inf"))
-            _LOGGER.debug(
-                "Day-ahead schedule built from '%s': %d hours with known prices", attr, real
-            )
-            return result
-
-    # Nothing found — show actionable debug info
-    list_attrs = {k: f"len={len(v)}, sample={v[0]!r}" for k, v in attrs.items() if isinstance(v, (list, tuple)) and v}
-    if list_attrs:
-        _LOGGER.warning(
-            "Day-ahead schedule: no price list found in sensor. "
-            "List-type attributes present: %s", list_attrs,
-        )
-    else:
-        _LOGGER.warning(
-            "Day-ahead schedule: sensor has no list-type attributes at all. "
-            "Scalar attributes: %s",
-            {k: v for k, v in attrs.items() if not isinstance(v, (list, tuple, dict))},
-        )
-    return None
+def _ts(value: datetime | None) -> str | None:
+    return value.isoformat() if value else None
 
 
 class PoolCirculationCoordinator(DataUpdateCoordinator):
-    """Manage pool circulation and heat pump based on electricity price."""
+    """Manage pool circulation and heat pump based on season, temperature and price."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
-        super().__init__(
-            hass,
-            _LOGGER,
-            name=DOMAIN,
-            update_interval=timedelta(seconds=COORDINATOR_UPDATE_INTERVAL),
-        )
+        super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=None)
         self.entry = entry
-        self._subscriptions: list[Any] = []
         self._store = Store(hass, STORE_VERSION, f"{STORE_KEY}_{entry.entry_id}")
+        self._lock = asyncio.Lock()
+        self._unsubs: list[Any] = []
+        self._started_unsub: Any = None
 
+        # Persisted state
         self.automation_enabled: bool = True
-        # Winter mode — heat pump kept off, circulation logic unchanged
         self.winter_mode: bool = False
         self.current_mode: str = MODE_OFF
-        self.hours_run_today: int = 0      # MEDIUM + HIGH hours (counts toward daily_hours target)
-        self.hours_low_today: int = 0      # LOW-only hours (background trickle)
-        self._last_run_hour: int | None = None
-
-        # Extra filter state — not persisted (resets on HA restart)
-        self.extra_filter_active: bool = False
-        self._extra_filter_task: asyncio.Task | None = None
-
-        # Cover-open circulation burst — 5-min HIGH RPM when cover is opened
-        self.cover_circulation_active: bool = False
-        self._cover_circulation_task: asyncio.Task | None = None
-        self._cover_watcher_unsubs: list[Any] = []
-
-        # Cooldown / min-on: timestamps to prevent rapid on/off cycling
-        self._last_turned_off: datetime | None = None
+        self._day: date = dt_util.now().date()
+        self._minutes_run: float = 0.0     # MEDIUM + HIGH minutes today
+        self._minutes_low: float = 0.0     # LOW minutes today
         self._last_turned_on: datetime | None = None
+        self._last_turned_off: datetime | None = None
+        self._extra_filter_until: datetime | None = None
+        self._cover_burst_until: datetime | None = None
+        self._safety: str | None = None
+        self._prices: list[float] | None = None
+        self._prices_day: date | None = None
+
+        # Runtime only
+        self._ready = False
+        self._started_at: datetime | None = None
+        self._acct_ts: datetime | None = None
+        self._last_save: datetime | None = None
+        self._decision: Decision | None = None
+        self._failed_entities: set[str] = set()
+        self._price_warned_day: date | None = None
+        self._entity_ids: dict[str, str | None] = {}
 
         # Cache of previous options so the smart update listener can diff changes
         self._prev_options: dict = dict(entry.options)
-
-        # Day-ahead schedule — built from full 24-hour price data at midnight.
-        # Two tiers: cheapest high_hours → HIGH RPM; next low_hours → LOW RPM.
-        # Falls back to reactive binary-sensor mode when price data unavailable.
-        self._daily_schedule: set[int] = set()      # HIGH-RPM hours
-        self._daily_low_schedule: set[int] = set()  # LOW-RPM hours
-        self._schedule_date: str | None = None
-        # Track which targets the schedule was built with so a mid-day change
-        # to daily_hours or daily_low_hours forces a rebuild.
-        self._schedule_high_target: int = -1
-        self._schedule_low_target: int = -1
-
-        # Temperature + price binary sensor state-change subscriptions (managed
-        # separately so they can be refreshed when options change entity IDs)
-        self._temp_watcher_unsubs: list[Any] = []
-        self._price_watcher_unsubs: list[Any] = []
 
     # ------------------------------------------------------------------
     # Config helpers
@@ -268,6 +183,10 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
     @property
     def cfg(self) -> dict:
         return {**self.entry.data, **self.entry.options}
+
+    @property
+    def season(self) -> str:
+        return SEASON_WINTER if self.winter_mode else SEASON_SUMMER
 
     @property
     def daily_hours_target(self) -> int:
@@ -281,999 +200,572 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
     def extra_filter_duration(self) -> int:
         return int(self.cfg.get(CONF_EXTRA_FILTER_DURATION, DEFAULT_EXTRA_FILTER_DURATION))
 
+    @property
+    def hours_run_today(self) -> float:
+        return round(self._minutes_run / 60, 2)
+
+    @property
+    def hours_low_today(self) -> float:
+        return round(self._minutes_low / 60, 2)
+
+    @property
+    def extra_filter_active(self) -> bool:
+        return self._extra_filter_until is not None and dt_util.now() < self._extra_filter_until
+
+    @property
+    def cover_circulation_active(self) -> bool:
+        return self._cover_burst_until is not None and dt_util.now() < self._cover_burst_until
+
+    def _settings(self) -> Settings:
+        c = self.cfg
+        return Settings(
+            pool_critical=float(c.get(CONF_POOL_CRITICAL_TEMP, DEFAULT_POOL_CRITICAL_TEMP)),
+            hysteresis=DEFAULT_SAFETY_HYSTERESIS,
+            algae=float(c.get(CONF_TEMP_ALGAE_THRESHOLD, DEFAULT_TEMP_ALGAE_THRESHOLD)),
+            freeze=float(c.get(CONF_TEMP_FREEZE_THRESHOLD, DEFAULT_TEMP_FREEZE_THRESHOLD)),
+            buffer=float(c.get(CONF_TEMP_OUTDOOR_BUFFER, DEFAULT_TEMP_OUTDOOR_BUFFER)),
+            daily_hours=self.daily_hours_target,
+            daily_low_hours=self.daily_low_hours_target,
+            winter_skip_hours=int(c.get(CONF_WINTER_SKIP_HOURS, DEFAULT_WINTER_SKIP_HOURS)),
+            winter_algae_hours=int(c.get(CONF_WINTER_ALGAE_HOURS, DEFAULT_WINTER_ALGAE_HOURS)),
+            winter_min_hours=int(c.get(CONF_WINTER_MIN_HOURS, DEFAULT_WINTER_MIN_HOURS)),
+        )
+
     # ------------------------------------------------------------------
     # Setup / teardown
     # ------------------------------------------------------------------
     async def async_setup(self) -> None:
-        """Load persisted state and register hourly + midnight callbacks."""
+        """Load persisted state, subscribe to sensors and start once HA is up."""
         await self._load_state()
+        self.async_set_updated_data(self._build_data())
+        self._register_watchers()
 
-        # Run at the top of every hour (HH:00:05) to re-evaluate mode
-        self._subscriptions.append(
-            async_track_time_change(
-                self.hass,
-                self._hourly_tick,
-                minute=0,
-                second=5,
-            )
-        )
-
-        # Reset daily counter at midnight
-        self._subscriptions.append(
-            async_track_time_change(
-                self.hass,
-                self._midnight_reset,
-                hour=0,
-                minute=0,
-                second=10,
-            )
-        )
-
-        # Re-evaluate immediately when temperature or price sensors change state
-        # instead of waiting up to 59 minutes for the next hourly tick.
-        self._register_temp_watchers()
-        self._register_price_watchers()
-        self._register_cover_watcher()
-
-        # Defer the initial mode evaluation until HA is fully started so that
-        # device integrations (e.g. heat pump) have finished their own setup.
+        # Device integrations (pump controller, heat pump) must finish their own
+        # setup before we command them — wait for HA to be fully started.
         if self.hass.is_running:
-            self.hass.async_create_task(self.async_evaluate_mode())
+            self._start()
         else:
-            self.hass.bus.async_listen_once(
-                EVENT_HOMEASSISTANT_STARTED,
-                self._on_ha_started,
+            self._started_unsub = self.hass.bus.async_listen_once(
+                EVENT_HOMEASSISTANT_STARTED, self._on_ha_started
             )
-
-        _LOGGER.info("Pool Circulation: hourly price-based scheduler active")
 
     async def async_unload(self) -> None:
-        await self._save_state()  # persist hours_run_today before any reload
-        if self._extra_filter_task:
-            self._extra_filter_task.cancel()
-            self._extra_filter_task = None
-        if self._cover_circulation_task:
-            self._cover_circulation_task.cancel()
-            self._cover_circulation_task = None
-        for unsub in self._subscriptions:
+        if self._ready:
+            self._account(dt_util.now())
+        await self._save_state()
+        if self._started_unsub:
+            self._started_unsub()
+            self._started_unsub = None
+        for unsub in self._unsubs:
             unsub()
-        self._subscriptions.clear()
-        for unsub in self._temp_watcher_unsubs:
-            unsub()
-        self._temp_watcher_unsubs.clear()
-        for unsub in self._price_watcher_unsubs:
-            unsub()
-        self._price_watcher_unsubs.clear()
-        for unsub in self._cover_watcher_unsubs:
-            unsub()
-        self._cover_watcher_unsubs.clear()
+        self._unsubs.clear()
+        self._ready = False
+
+    @callback
+    def _on_ha_started(self, event: Event) -> None:
+        self._started_unsub = None
+        self._start()
+
+    @callback
+    def _start(self) -> None:
+        now = dt_util.now()
+        self._ready = True
+        self._started_at = now
+        self._acct_ts = now
+        self._last_save = now
+        # Every minute at :05 — accounting, expiry, decision and reconciliation
+        self._unsubs.append(async_track_time_change(self.hass, self._async_tick, second=5))
+        self.hass.async_create_task(self.async_evaluate_mode())
+        _LOGGER.info(
+            "Pool Circulation started: season=%s mode=%s automation=%s",
+            self.season, self.current_mode, self.automation_enabled,
+        )
 
     # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
     async def _load_state(self) -> None:
         stored = await self._store.async_load() or {}
-        today = datetime.now().date().isoformat()
-        if stored.get("date") == today:
-            self.hours_run_today = stored.get("hours_run_today", 0)
-            self.hours_low_today = stored.get("hours_low_today", 0)
-            # Restore day-ahead schedule only when it was built for today
-            raw_high = stored.get("daily_schedule")
-            raw_low = stored.get("daily_low_schedule")
-            if raw_high is not None:
-                self._daily_schedule = set(raw_high)
-                self._daily_low_schedule = set(raw_low or [])
-                self._schedule_date = today
-                _LOGGER.debug(
-                    "Restored day-ahead schedule for %s: HIGH %s LOW %s",
-                    today, sorted(self._daily_schedule), sorted(self._daily_low_schedule),
-                )
-        else:
-            self.hours_run_today = 0
-            self.hours_low_today = 0
-            self._daily_schedule = set()
-            self._daily_low_schedule = set()
-            self._schedule_date = None
-        self.current_mode = stored.get("current_mode", MODE_OFF)
+        today = dt_util.now().date()
+
         self.automation_enabled = stored.get("automation_enabled", True)
         self.winter_mode = stored.get("winter_mode", False)
-        for attr, key in (
-            ("_last_turned_off", "last_turned_off"),
-            ("_last_turned_on", "last_turned_on"),
-        ):
-            raw_ts = stored.get(key)
-            if raw_ts:
-                try:
-                    setattr(self, attr, datetime.fromisoformat(raw_ts))
-                except ValueError:
-                    setattr(self, attr, None)
+        self.current_mode = stored.get("current_mode", MODE_OFF)
+        self._safety = stored.get("safety")
+        self._last_turned_on = _parse_ts(stored.get("last_turned_on"))
+        self._last_turned_off = _parse_ts(stored.get("last_turned_off"))
+        self._extra_filter_until = _parse_ts(stored.get("extra_filter_until"))
+        self._cover_burst_until = _parse_ts(stored.get("cover_burst_until"))
+
+        if stored.get("date") == today.isoformat():
+            # Pre-1.6 storage kept whole hours only
+            self._minutes_run = float(stored.get("minutes_run_today", stored.get("hours_run_today", 0) * 60))
+            self._minutes_low = float(stored.get("minutes_low_today", stored.get("hours_low_today", 0) * 60))
+        if stored.get("prices_date") == today.isoformat() and stored.get("prices"):
+            self._prices = [INF if p is None else float(p) for p in stored["prices"]]
+            self._prices_day = today
+        self._day = today
+
+        _LOGGER.debug(
+            "Restored state: mode=%s season=%s run=%.0f min low=%.0f min safety=%s "
+            "extra_filter_until=%s",
+            self.current_mode, self.season, self._minutes_run, self._minutes_low,
+            self._safety, self._extra_filter_until,
+        )
 
     async def _save_state(self) -> None:
+        self._last_save = dt_util.now()
         await self._store.async_save(
             {
-                "date": datetime.now().date().isoformat(),
-                "hours_run_today": self.hours_run_today,
-                "hours_low_today": self.hours_low_today,
+                "date": self._day.isoformat(),
+                "minutes_run_today": round(self._minutes_run, 2),
+                "minutes_low_today": round(self._minutes_low, 2),
+                # Kept for anyone reading the store file / downgrading
+                "hours_run_today": int(self._minutes_run // 60),
+                "hours_low_today": int(self._minutes_low // 60),
                 "current_mode": self.current_mode,
                 "automation_enabled": self.automation_enabled,
                 "winter_mode": self.winter_mode,
-                "last_turned_off": (
-                    self._last_turned_off.isoformat() if self._last_turned_off else None
+                "safety": self._safety,
+                "last_turned_on": _ts(self._last_turned_on),
+                "last_turned_off": _ts(self._last_turned_off),
+                "extra_filter_until": _ts(self._extra_filter_until),
+                "cover_burst_until": _ts(self._cover_burst_until),
+                "prices": (
+                    [None if p == INF else p for p in self._prices] if self._prices else None
                 ),
-                "last_turned_on": (
-                    self._last_turned_on.isoformat() if self._last_turned_on else None
-                ),
-                "daily_schedule": sorted(self._daily_schedule),
-                "daily_low_schedule": sorted(self._daily_low_schedule),
-                "schedule_date": self._schedule_date,
+                "prices_date": self._prices_day.isoformat() if self._prices_day else None,
             }
         )
 
     # ------------------------------------------------------------------
-    # Scheduled callbacks
+    # Minute tick
     # ------------------------------------------------------------------
-    @callback
-    def _on_ha_started(self, event: Event) -> None:
-        """HA has fully started — now safe to call device services."""
-        self.hass.async_create_task(self.async_evaluate_mode())
+    async def _async_tick(self, now: datetime) -> None:
+        now = dt_util.as_local(now)
+        self._account(now)
+        self._expire_timers(now)
+        await self.async_evaluate_mode()
+        if self._last_save is None or now - self._last_save >= timedelta(minutes=SAVE_INTERVAL_MINUTES):
+            await self._save_state()
 
-    @callback
-    def _hourly_tick(self, now: datetime) -> None:
-        """Called at HH:00:05 — account for the previous hour then re-evaluate."""
-        if self.current_mode == MODE_LOW:
-            self.hours_low_today += 1
-            _LOGGER.debug("Hourly tick: LOW mode, hours_low_today=%d", self.hours_low_today)
-        elif self.current_mode in (MODE_MEDIUM, MODE_HIGH):
-            self.hours_run_today += 1
-            _LOGGER.debug(
-                "Hourly tick: %s mode, hours_run_today=%d", self.current_mode, self.hours_run_today
+    def _account(self, now: datetime) -> None:
+        """Add elapsed time to today's runtime counters."""
+        prev, self._acct_ts = self._acct_ts, now
+        if now.date() != self._day:
+            _LOGGER.info(
+                "New day: resetting counters (run %.1f h, low %.1f h yesterday)",
+                self._minutes_run / 60, self._minutes_low / 60,
             )
+            self._day = now.date()
+            self._minutes_run = 0.0
+            self._minutes_low = 0.0
+            midnight = dt_util.start_of_local_day(now)
+            prev = max(prev, midnight) if prev else midnight
+            self.hass.async_create_task(self._save_state())
+        if prev is None:
+            return
+        elapsed = (now - prev).total_seconds()
+        if elapsed <= 0 or elapsed > MAX_ACCOUNTING_GAP_SECONDS:
+            return
+        if not self._pump_running():
+            return
+        if self.current_mode == MODE_LOW:
+            self._minutes_low += elapsed / 60
+        elif self.current_mode in (MODE_MEDIUM, MODE_HIGH):
+            self._minutes_run += elapsed / 60
 
-        # Persist the updated counter immediately so a crash or update between
-        # hourly ticks never loses more than the current partial hour.
-        # Without this, hours_run_today is only saved on mode changes — if the
-        # pump runs in steady HIGH all morning with no mode switch, a restart
-        # would reset the counter and could trigger must-run incorrectly.
-        self.hass.async_create_task(self._save_state())
-        self.hass.async_create_task(self.async_evaluate_mode())
-
-    @callback
-    def _midnight_reset(self, now: datetime) -> None:
-        """Reset daily hours counter and schedule at midnight."""
-        _LOGGER.info(
-            "Midnight reset: resetting hours_run_today from %d to 0",
-            self.hours_run_today,
-        )
-        self.hours_run_today = 0
-        self.hours_low_today = 0
-        # Clear schedule so it gets rebuilt for the new day on the next evaluation.
-        # Nordpool refreshes today's prices at midnight so the rebuild will have
-        # the correct 24-hour price list for the new day.
-        self._daily_schedule = set()
-        self._daily_low_schedule = set()
-        self._schedule_date = None
-        self.hass.async_create_task(self._save_state())
-        self.async_set_updated_data(self._build_data())
+    def _expire_timers(self, now: datetime) -> None:
+        if self._extra_filter_until and now >= self._extra_filter_until:
+            _LOGGER.info("Extra filter finished")
+            self._extra_filter_until = None
+            self.hass.bus.async_fire(EVENT_EXTRA_FILTER_CHANGED, {"active": False, "duration_minutes": 0})
+            self.hass.async_create_task(self._save_state())
+        if self._cover_burst_until and now >= self._cover_burst_until:
+            _LOGGER.info("Cover circulation burst finished")
+            self._cover_burst_until = None
+            self.hass.async_create_task(self._save_state())
 
     # ------------------------------------------------------------------
-    # Temperature watchers
+    # Watchers
     # ------------------------------------------------------------------
-    def _register_temp_watchers(self) -> None:
-        """Subscribe to pool and outdoor temp sensor state changes.
+    def _register_watchers(self) -> None:
+        cfg = self.cfg
+        temps = [e for e in (cfg.get(CONF_SENSOR_POOL_TEMP), cfg.get(CONF_SENSOR_OUTDOOR_TEMP)) if e]
+        if temps:
+            self._unsubs.append(async_track_state_change_event(self.hass, temps, self._on_temp_changed))
 
-        Called once during setup and again whenever options change (the sensor
-        entity IDs might have been edited). Old subscriptions are replaced.
-        """
-        for unsub in list(self._temp_watcher_unsubs):
-            unsub()
-        self._temp_watcher_unsubs.clear()
+        binaries = [e for e in (cfg.get(CONF_BINARY_BEST_PRICE), cfg.get(CONF_BINARY_PEAK_PRICE)) if e]
+        if binaries:
+            self._unsubs.append(async_track_state_change_event(self.hass, binaries, self._on_price_changed))
 
-        for conf_key in (CONF_SENSOR_POOL_TEMP, CONF_SENSOR_OUTDOOR_TEMP):
-            entity_id = self.cfg.get(conf_key)
-            if entity_id:
-                unsub = async_track_state_change_event(
-                    self.hass,
-                    [entity_id],
-                    self._on_temp_changed,
-                )
-                self._temp_watcher_unsubs.append(unsub)
-                _LOGGER.debug("Watching temperature sensor: %s", entity_id)
+        if cover := cfg.get(CONF_COVER_POOL):
+            self._unsubs.append(async_track_state_change_event(self.hass, [cover], self._on_cover_changed))
 
-    def _register_price_watchers(self) -> None:
-        """Subscribe to best-price and peak-price binary sensor changes.
-
-        The old automations fired immediately when the price window changed
-        (e.g. best-price turned off → switch back to LOW). Without this the
-        component would wait up to 55 min for the next hourly tick.
-        """
-        for unsub in list(self._price_watcher_unsubs):
-            unsub()
-        self._price_watcher_unsubs.clear()
-
-        for conf_key in (CONF_BINARY_BEST_PRICE, CONF_BINARY_PEAK_PRICE):
-            entity_id = self.cfg.get(conf_key)
-            if entity_id:
-                unsub = async_track_state_change_event(
-                    self.hass,
-                    [entity_id],
-                    self._on_price_changed,
-                )
-                self._price_watcher_unsubs.append(unsub)
-                _LOGGER.debug("Watching price binary sensor: %s", entity_id)
-
-    @callback
-    def _on_price_changed(self, event) -> None:
-        """Re-evaluate mode immediately when a price binary sensor changes state.
-
-        Handles transitions like best-price window opening/closing or peak-price
-        starting/ending without waiting for the next hourly tick.
-        Only acts when the value actually changed to on/off (not unavailable).
-        """
-        new_state = event.data.get("new_state")
-        old_state = event.data.get("old_state")
-        if new_state is None:
-            return
-        if new_state.state not in ("on", "off"):
-            return
-        if old_state and new_state.state == old_state.state:
-            return
-        _LOGGER.debug(
-            "Price binary sensor %s changed: %s → %s — re-evaluating mode",
-            new_state.entity_id,
-            old_state.state if old_state else "?",
-            new_state.state,
-        )
-        self.hass.async_create_task(self.async_evaluate_mode())
+        devices = [
+            e for e in (
+                cfg.get(CONF_SWITCH_CIRCULATION), cfg.get(CONF_SWITCH_RPM_LOW),
+                cfg.get(CONF_SWITCH_RPM_MEDIUM), cfg.get(CONF_SWITCH_RPM_HIGH),
+                cfg.get(CONF_SWITCH_UV_LAMP),
+            ) if e
+        ]
+        if devices:
+            self._unsubs.append(async_track_state_change_event(self.hass, devices, self._on_device_changed))
 
     @callback
     def _on_temp_changed(self, event) -> None:
-        """Re-evaluate mode immediately when a temperature sensor changes.
+        """Re-decide as soon as a temperature reading changes.
 
-        Handles both algae skip (pool temp crosses algae threshold) and
-        freeze protection (outdoor temp crosses freeze threshold) without
-        waiting for the next hourly tick.
+        Deciding is cheap and only mismatching devices are commanded, so there
+        is no need to filter for threshold crossings here.
         """
         new_state = event.data.get("new_state")
         old_state = event.data.get("old_state")
-        if new_state is None:
+        if new_state is None or (old_state and new_state.state == old_state.state):
             return
+        self.hass.async_create_task(self.async_evaluate_mode())
 
-        entity_id = new_state.entity_id
-
-        # Only act when the value actually changes meaningfully — ignore
-        # unavailable / unknown transitions that don't cross a threshold.
-        try:
-            new_val = float(new_state.state)
-        except (ValueError, TypeError):
+    @callback
+    def _on_price_changed(self, event) -> None:
+        new_state = event.data.get("new_state")
+        old_state = event.data.get("old_state")
+        if new_state is None or new_state.state not in ("on", "off"):
             return
+        if old_state and new_state.state == old_state.state:
+            return
+        self.hass.async_create_task(self.async_evaluate_mode())
 
-        try:
-            old_val = float(old_state.state) if old_state else None
-        except (ValueError, TypeError):
-            old_val = None
+    @callback
+    def _on_device_changed(self, event) -> None:
+        """A pump/UV switch came back from unavailable (controller reboot) — re-apply now.
 
-        pool_sensor = self.cfg.get(CONF_SENSOR_POOL_TEMP)
-        outdoor_sensor = self.cfg.get(CONF_SENSOR_OUTDOOR_TEMP)
-
-        if entity_id == pool_sensor:
-            algae_threshold = float(self.cfg.get(CONF_TEMP_ALGAE_THRESHOLD, DEFAULT_TEMP_ALGAE_THRESHOLD))
-            heating_threshold = float(self.cfg.get(CONF_POOL_TEMP_HEATING_THRESHOLD, DEFAULT_POOL_TEMP_HEATING_THRESHOLD))
-            crossed_algae = old_val is None or (old_val >= algae_threshold) != (new_val >= algae_threshold)
-            crossed_heating = old_val is None or (old_val >= heating_threshold) != (new_val >= heating_threshold)
-            if crossed_algae:
-                _LOGGER.debug(
-                    "Pool temp crossed algae threshold (%.1f°C): %.1f → %.1f — re-evaluating mode",
-                    algae_threshold, old_val if old_val is not None else float("nan"), new_val,
-                )
-            if crossed_heating:
-                _LOGGER.debug(
-                    "Pool temp crossed heating threshold (%.1f°C): %.1f → %.1f — re-evaluating heat pump",
-                    heating_threshold, old_val if old_val is not None else float("nan"), new_val,
-                )
-            if crossed_algae or crossed_heating:
-                self.hass.async_create_task(self.async_evaluate_mode())
-
-        elif entity_id == outdoor_sensor:
-            threshold = float(self.cfg.get(CONF_TEMP_FREEZE_THRESHOLD, DEFAULT_TEMP_FREEZE_THRESHOLD))
-            if old_val is None or (old_val <= threshold) != (new_val <= threshold):
-                _LOGGER.debug(
-                    "Outdoor temp crossed freeze threshold (%.1f°C): %.1f → %.1f — re-evaluating mode",
-                    threshold, old_val if old_val is not None else float("nan"), new_val,
-                )
-                self.hass.async_create_task(self.async_evaluate_mode())
-
-    def _register_cover_watcher(self) -> None:
-        """Subscribe to pool cover state changes to trigger the opening burst."""
-        for unsub in list(self._cover_watcher_unsubs):
-            unsub()
-        self._cover_watcher_unsubs.clear()
-
-        cover = self.cfg.get(CONF_COVER_POOL)
-        if cover:
-            unsub = async_track_state_change_event(
-                self.hass, [cover], self._on_cover_changed,
-            )
-            self._cover_watcher_unsubs.append(unsub)
-            _LOGGER.debug("Watching pool cover: %s", cover)
+        Ordinary on/off changes are left to the minute tick so a device that
+        refuses a command cannot cause a tight command loop.
+        """
+        new_state = event.data.get("new_state")
+        old_state = event.data.get("old_state")
+        if new_state is None or new_state.state in _UNAVAILABLE:
+            return
+        if old_state is None or old_state.state in _UNAVAILABLE:
+            _LOGGER.info("%s is back (%s) — reconciling", new_state.entity_id, new_state.state)
+            self.hass.async_create_task(self.async_evaluate_mode())
 
     @callback
     def _on_cover_changed(self, event) -> None:
-        """Trigger 5-min HIGH circulation burst when the pool cover is opened.
-
-        Circulates the stagnant water that sat under the cover before UV resumes.
-        Bypasses cooldown and min-on — the user just opened the cover intentionally.
-        """
+        """Start a short high-speed burst when the pool cover is opened."""
         new_state = event.data.get("new_state")
         old_state = event.data.get("old_state")
         if new_state is None:
             return
-
-        new = new_state.state
         old = old_state.state if old_state else None
-
-        # Only fire when cover transitions TO open (not already open)
-        if new == "open" and old != "open":
-            _LOGGER.info("Pool cover opened — starting 5-min HIGH circulation burst")
-            self.hass.async_create_task(self._start_cover_circulation())
-
-    async def _start_cover_circulation(self) -> None:
-        """Activate 5-min HIGH RPM burst after cover opens."""
-        # Cancel any running burst (e.g. cover opened twice quickly)
-        if self._cover_circulation_task:
-            self._cover_circulation_task.cancel()
-            self._cover_circulation_task = None
-
-        self.cover_circulation_active = True
-        self._cover_circulation_task = self.hass.async_create_task(
-            self._cover_circulation_timeout()
-        )
-        await self.async_evaluate_mode()
-
-    async def _cover_circulation_timeout(self) -> None:
-        """Deactivate cover burst after 5 minutes."""
-        try:
-            await asyncio.sleep(5 * 60)
-        except asyncio.CancelledError:
-            return
-        _LOGGER.info("Cover circulation burst complete — returning to normal schedule")
-        self.cover_circulation_active = False
-        self._cover_circulation_task = None
-        await self.async_evaluate_mode()
+        # Ignore unavailable → open (e.g. after a restart): the cover did not move
+        if new_state.state == "open" and old not in ("open", None, *_UNAVAILABLE):
+            _LOGGER.info("Pool cover opened — %d min high-speed burst", COVER_BURST_MINUTES)
+            self._cover_burst_until = dt_util.now() + timedelta(minutes=COVER_BURST_MINUTES)
+            self.hass.async_create_task(self._save_state())
+            self.hass.async_create_task(self.async_evaluate_mode())
 
     # ------------------------------------------------------------------
-    # Extra filter mode
+    # User actions
     # ------------------------------------------------------------------
     async def async_set_extra_filter(self, on: bool) -> None:
-        """Activate or deactivate extra filter mode."""
-        # Cancel any running countdown
-        if self._extra_filter_task:
-            self._extra_filter_task.cancel()
-            self._extra_filter_task = None
-
-        self.extra_filter_active = on
-
         if on:
             duration = self.extra_filter_duration
-            _LOGGER.info(
-                "Extra filter activated: running at high RPM for %d minutes", duration
-            )
-            self._extra_filter_task = self.hass.async_create_task(
-                self._extra_filter_timeout(duration)
-            )
-
+            self._extra_filter_until = dt_util.now() + timedelta(minutes=duration)
+            _LOGGER.info("Extra filter: high speed for %d minutes", duration)
+        else:
+            self._extra_filter_until = None
         self.hass.bus.async_fire(
             EVENT_EXTRA_FILTER_CHANGED,
-            {
-                "active": on,
-                "duration_minutes": self.extra_filter_duration if on else 0,
-            },
+            {"active": on, "duration_minutes": self.extra_filter_duration if on else 0},
         )
-        await self.async_evaluate_mode()
         await self._save_state()
+        await self.async_evaluate_mode()
 
-    async def _extra_filter_timeout(self, minutes: int) -> None:
-        """Auto-deactivate extra filter after duration has elapsed."""
-        try:
-            await asyncio.sleep(minutes * 60)
-        except asyncio.CancelledError:
+    async def async_set_winter_mode(self, winter: bool) -> None:
+        if winter == self.winter_mode:
             return
-        _LOGGER.info("Extra filter timeout: deactivating after %d minutes", minutes)
-        self.extra_filter_active = False
-        self._extra_filter_task = None
-        self.hass.bus.async_fire(EVENT_EXTRA_FILTER_CHANGED, {"active": False, "duration_minutes": 0})
-        await self.async_evaluate_mode()
+        _LOGGER.info("Season changed to %s", SEASON_WINTER if winter else SEASON_SUMMER)
+        self.winter_mode = winter
         await self._save_state()
+        await self.async_evaluate_mode()
+
+    async def async_set_automation(self, enabled: bool) -> None:
+        self.automation_enabled = enabled
+        await self._save_state()
+        await self.async_evaluate_mode()
 
     # ------------------------------------------------------------------
-    # Day-ahead schedule
+    # Decision + application
     # ------------------------------------------------------------------
-    def _build_daily_schedule(self) -> tuple[set[int], set[int]]:
-        """Pick the cheapest hours from today's full price list into two speed tiers.
-
-        Reads the ``today`` attribute from the configured price sensor — a list of
-        24 floats (one per hour) published by Nordpool / Tibber integrations.
-
-        Returns (high_set, low_set):
-        - ``high_set``: cheapest ``daily_hours_target`` hours → HIGH RPM
-          (thorough filtration + heat pump during cheapest electricity)
-        - ``low_set``: next cheapest ``daily_low_hours_target`` hours → LOW RPM
-          (light circulation at moderate prices; no overlap with HIGH set)
-
-        Returns (set(), set()) when price data is unavailable; the caller falls
-        back to reactive binary-sensor logic in that case.
-        """
-        high_target = self.daily_hours_target
-        low_target = self.daily_low_hours_target
-
-        if high_target <= 0 and low_target <= 0:
-            return set(), set()
-
-        price_entity = self.cfg.get(CONF_SENSOR_PRICE)
-        if not price_entity:
-            return set(), set()
-
-        state = self.hass.states.get(price_entity)
-        if not state:
-            return set(), set()
-
-        today_prices: list | None = _extract_today_prices(state.attributes)
-
-        if not today_prices or len(today_prices) < 24:
-            _LOGGER.warning(
-                "Day-ahead schedule: no usable 24-hour price list on %s "
-                "(tried 'today' plain floats, 'today' dicts, 'raw_today' dicts). "
-                "Available attributes: %s — falling back to reactive binary-sensor mode.",
-                price_entity,
-                sorted(state.attributes.keys()),
-            )
-            return set(), set()
-
-        # Rank all 24 hours by price ascending
-        ranked = sorted(range(24), key=lambda h: today_prices[h])
-
-        # Tier 1: cheapest high_target hours → HIGH
-        high_set = set(ranked[:high_target])
-
-        # Tier 2: next low_target hours (not already in HIGH) → LOW
-        remaining = [h for h in ranked if h not in high_set]
-        low_set = set(remaining[:low_target])
-
-        def _hours_str(hours: set[int], prices: list) -> str:
-            return ", ".join(
-                f"{h:02d}h={prices[h]:.4f}" for h in sorted(hours)
-            )
-
-        _LOGGER.info(
-            "Day-ahead schedule built: HIGH %s | LOW %s",
-            _hours_str(high_set, today_prices),
-            _hours_str(low_set, today_prices) if low_set else "none",
+    def _sensors_pending(self) -> bool:
+        """True right after start while configured temperature sensors have no value yet."""
+        if not self._started_at:
+            return False
+        if (dt_util.now() - self._started_at).total_seconds() > _STARTUP_GRACE_SECONDS:
+            return False
+        return any(
+            self.cfg.get(k) and self._state_float(k) is None
+            for k in (CONF_SENSOR_POOL_TEMP, CONF_SENSOR_OUTDOOR_TEMP)
         )
-        return high_set, low_set
 
-    def _maybe_rebuild_schedule(self) -> bool:
-        """Rebuild the day-ahead schedule if it is missing or stale.
-
-        Returns True when a valid schedule is available (either already cached or
-        just rebuilt). Returns False when price data is not yet available; the
-        caller should fall back to reactive binary-sensor mode.
-
-        This is idempotent and cheap when the schedule is already current.
-        """
-        today = datetime.now().date().isoformat()
-        targets_match = (
-            self._schedule_high_target == self.daily_hours_target
-            and self._schedule_low_target == self.daily_low_hours_target
-        )
-        # Return cached schedule when it's for today and targets haven't changed
-        if (
-            self._schedule_date == today
-            and (self._daily_schedule or self._daily_low_schedule)
-            and targets_match
-        ):
-            return True
-
-        high_set, low_set = self._build_daily_schedule()
-        if high_set or low_set:
-            self._daily_schedule = high_set
-            self._daily_low_schedule = low_set
-            self._schedule_date = today
-            self._schedule_high_target = self.daily_hours_target
-            self._schedule_low_target = self.daily_low_hours_target
-            self.hass.async_create_task(self._save_state())
-            return True
-
-        return False  # price data not yet available
-
-    # ------------------------------------------------------------------
-    # Mode decision
-    # ------------------------------------------------------------------
-    def _freeze_risk(self) -> bool:
-        """Return True if outdoor temp is at or below the freeze threshold.
-
-        When True the pump must run at low speed to keep water moving and
-        prevent the pool and pipes from freezing. Overrides ALL other logic.
-        """
-        threshold = self.cfg.get(CONF_TEMP_FREEZE_THRESHOLD, DEFAULT_TEMP_FREEZE_THRESHOLD)
-        outdoor = self._state_float(CONF_SENSOR_OUTDOOR_TEMP)
-        if outdoor is None:
-            return False
-        if outdoor <= threshold:
+    def _today_prices(self, now: datetime) -> list[float] | None:
+        """Today's 24 hourly prices — live from the sensor, else the stored copy."""
+        today = now.date()
+        entity = self.cfg.get(CONF_SENSOR_PRICE)
+        state = self.hass.states.get(entity) if entity else None
+        if state is not None:
+            prices = extract_today_prices(state.attributes, today)
+            if prices:
+                if prices != self._prices or self._prices_day != today:
+                    self._prices, self._prices_day = prices, today
+                    self.hass.async_create_task(self._save_state())
+                return prices
+        if self._prices_day == today and self._prices:
+            return self._prices
+        if entity and self._price_warned_day != today:
+            self._price_warned_day = today
             _LOGGER.warning(
-                "Freeze protection active: outdoor temp %.1f°C ≤ %.1f°C threshold",
-                outdoor,
-                threshold,
+                "No 24-hour price list on %s (%s) — using best/peak price sensors instead",
+                entity, describe_attrs(state.attributes) if state else "entity missing",
             )
-            return True
-        return False
+        return None
 
-    def _too_cold_to_circulate(self) -> bool:
-        """Return True if pool water temp is below the algae growth threshold.
+    def _inputs(self, now: datetime) -> Inputs:
+        return Inputs(
+            now=now,
+            season=self.season,
+            pool_temp=self._state_float(CONF_SENSOR_POOL_TEMP),
+            outdoor_temp=self._state_float(CONF_SENSOR_OUTDOOR_TEMP),
+            prices=self._today_prices(now),
+            is_peak=self._state_is_on(CONF_BINARY_PEAK_PRICE),
+            is_best=self._state_is_on(CONF_BINARY_BEST_PRICE),
+            current_mode=self.current_mode,
+            automation_enabled=self.automation_enabled,
+            extra_filter=self.extra_filter_active,
+            cover_burst=self.cover_circulation_active,
+            in_min_on=self._in_min_on(),
+            in_cooldown=self._in_cooldown(),
+            hours_run=self._minutes_run / 60,
+            hours_low=self._minutes_low / 60,
+            prev_safety=self._safety,
+        )
 
-        Pool water temperature decides algae risk. If no pool temp sensor is
-        configured the skip is never triggered (safe default: always circulate).
-        """
-        threshold = self.cfg.get(CONF_TEMP_ALGAE_THRESHOLD, DEFAULT_TEMP_ALGAE_THRESHOLD)
-        pool = self._state_float(CONF_SENSOR_POOL_TEMP)
-
-        if pool is None:
-            return False
-
-        if pool < threshold:
-            _LOGGER.debug(
-                "Algae skip active: pool temp %.1f°C < %.1f°C threshold",
-                pool,
-                threshold,
-            )
-            return True
-
-        return False
-
-    def _outdoor_buffer_active(self) -> bool:
-        """Return True when outdoor temp is in the cold-buffer zone.
-
-        This is the range between the freeze threshold and the algae-stop cutoff
-        (default 2°C–4°C). In this zone the pool is cold (below algae threshold)
-        but outdoor conditions are borderline — it's safer to keep the pump at
-        LOW than to stop it entirely, even though algae skip would normally fire.
-
-        Mirrors the old automation behaviour:
-          'Cirkulationspump off pooltemp under 9 and temp over 4'
-        which required outdoor > 4°C before stopping the pump on a cold pool.
-        """
-        outdoor = self._state_float(CONF_SENSOR_OUTDOOR_TEMP)
-        if outdoor is None:
-            return False
-        freeze = float(self.cfg.get(CONF_TEMP_FREEZE_THRESHOLD, DEFAULT_TEMP_FREEZE_THRESHOLD))
-        buffer = float(self.cfg.get(CONF_TEMP_OUTDOOR_BUFFER, DEFAULT_TEMP_OUTDOOR_BUFFER))
-        # Active when outdoor is above the freeze threshold (freeze protection handles
-        # anything colder) but at or below the algae-stop cutoff.
-        return freeze < outdoor <= buffer
-
-    def _in_cooldown(self) -> bool:
-        """Return True if the pump is within the cooldown window after turning off.
-
-        Freeze protection and extra filter mode bypass cooldown — they are either
-        safety-critical or explicitly triggered by the user.
-        """
-        cooldown = int(self.cfg.get(CONF_COOLDOWN_MINUTES, DEFAULT_COOLDOWN_MINUTES))
-        if cooldown == 0 or self._last_turned_off is None:
-            return False
-        elapsed_seconds = (datetime.now() - self._last_turned_off).total_seconds()
-        return elapsed_seconds < cooldown * 60
-
-    def _cooldown_remaining_seconds(self) -> int:
-        """Seconds remaining in the current cooldown, or 0 if not in cooldown."""
-        cooldown = int(self.cfg.get(CONF_COOLDOWN_MINUTES, DEFAULT_COOLDOWN_MINUTES))
-        if cooldown == 0 or self._last_turned_off is None:
-            return 0
-        elapsed = (datetime.now() - self._last_turned_off).total_seconds()
-        remaining = cooldown * 60 - elapsed
-        return max(0, int(remaining))
-
-    def _in_min_on(self) -> bool:
-        """Return True if the pump is within the minimum on-time window.
-
-        Prevents the pump from being turned off too quickly after starting —
-        including by algae skip, peak price, or any other reason. Evaluated
-        before algae skip in _decide_mode so a brief temperature dip cannot
-        stop the pump within seconds of it turning on.
-        Only freeze protection and extra filter bypass this.
-        """
-        min_on = int(self.cfg.get(CONF_MIN_ON_MINUTES, DEFAULT_MIN_ON_MINUTES))
-        if min_on == 0 or self._last_turned_on is None:
-            return False
-        elapsed_seconds = (datetime.now() - self._last_turned_on).total_seconds()
-        return elapsed_seconds < min_on * 60
-
-    def _min_on_remaining_seconds(self) -> int:
-        """Seconds remaining in the minimum on-time, or 0 if not constrained."""
-        min_on = int(self.cfg.get(CONF_MIN_ON_MINUTES, DEFAULT_MIN_ON_MINUTES))
-        if min_on == 0 or self._last_turned_on is None:
-            return 0
-        elapsed = (datetime.now() - self._last_turned_on).total_seconds()
-        remaining = min_on * 60 - elapsed
-        return max(0, int(remaining))
-
-    def _scheduling_active(self) -> bool:
-        """Return True when price-based scheduling and daily hours target should apply.
-
-        Scheduling is only meaningful when the pool is warm enough for algae to grow —
-        i.e. when regular circulation is actually needed. Below the algae threshold the
-        water is too cold for biological activity so there is no point running the pump
-        for energy/filtration reasons; the cheapest option is simply to stay off.
-
-        If no pool temperature sensor is configured we assume the pool is warm and
-        scheduling applies (safe default — better to over-circulate than skip).
-        """
-        return not self._too_cold_to_circulate()
-
-    def _decide_mode(self) -> str:
-        """Determine the target mode from current signals and state.
-
-        Speed mapping:
-        - HIGH   : extra filter only (user-triggered) — intensive filtration
-        - MEDIUM : scheduled cheap hours (daily_hours target) — normal daily run
-        - LOW    : background trickle (daily_low_hours) or freeze protection
-        - OFF    : peak price / outside schedule / algae skip
-
-        Priority (highest → lowest):
-        1. Freeze protection — outdoor temp ≤ freeze threshold → MEDIUM (bypasses both timers)
-        2. Extra filter active → HIGH (bypasses both timers — user explicitly triggered)
-        3. Cover opened → HIGH for 5 min (bypass timers — circulate stagnant water)
-        4. Automation disabled → hold current mode
-        4. Min-on — pump started recently → hold current running mode (blocks algae skip,
-           peak price, and any other reason to stop — pump must run its minimum time)
-        5. Pool temperature gate — pool below algae threshold:
-             outdoor in buffer zone → LOW; otherwise → OFF (no scheduling)
-        6. Must-run override — schedule gap cannot cover remaining hours → MEDIUM
-        7. Day-ahead schedule — current hour in MEDIUM tier → MEDIUM, LOW tier → LOW
-        8. Reactive fallback (no 'today' prices) — best → MEDIUM, normal → MEDIUM/LOW, peak → OFF
-        9. Cooldown — pump was recently turned off → temporarily hold OFF
-       10. Minimum LOW — pool warm (above algae threshold) → never OFF, always at least LOW
-        """
-        # 1. Freeze protection overrides everything — safety critical, bypasses timers
-        if self._freeze_risk():
-            return MODE_MEDIUM
-
-        # 2. Extra filter forces high RPM — user intentionally triggered, bypasses timers
-        if self.extra_filter_active:
-            return MODE_HIGH
-
-        # 3. Cover-open burst — 5 min HIGH to circulate stagnant water after cover removal
-        if self.cover_circulation_active:
-            return MODE_HIGH
-
-        # 4. Automation disabled — hold current mode
-        if not self.automation_enabled:
-            return self.current_mode
-
-        # 4. Min-on — keep pump running if it hasn't met minimum on-time yet.
-        #    Evaluated before the temperature gate so a brief dip below threshold
-        #    cannot stop the pump within seconds of it starting.
-        if self.current_mode != MODE_OFF and self._in_min_on():
-            remaining = self._min_on_remaining_seconds()
-            _LOGGER.debug(
-                "Min-on active: holding pump on for %d more seconds", remaining
-            )
-            return self.current_mode
-
-        # 5. Pool temperature gate — price and daily hours only apply when the pool
-        #    is warm enough for algae growth (above the algae threshold).
-        #    Exception: when outdoor temp is in the cold-buffer zone (between freeze
-        #    threshold and buffer cutoff, default 2–4°C) keep the pump at LOW even
-        #    though the pool is cold — safer than stopping in marginal conditions.
-        #    This mirrors the old automation that only stopped the pump when outdoor
-        #    temp was above 4°C, so the pump kept running when outdoor was 2–4°C.
-        if not self._scheduling_active():
-            if self._outdoor_buffer_active():
-                _LOGGER.debug(
-                    "Pool cold but outdoor in buffer zone (%.1f°C) — holding at LOW",
-                    self._state_float(CONF_SENSOR_OUTDOOR_TEMP) or 0.0,
-                )
-                return MODE_LOW
-            _LOGGER.debug(
-                "Scheduling inactive: pool too cold (threshold %.1f°C) — pump off",
-                float(self.cfg.get(CONF_TEMP_ALGAE_THRESHOLD, DEFAULT_TEMP_ALGAE_THRESHOLD)),
-            )
-            return MODE_OFF
-
-        # 6. Price logic + must-run (only reached when pool is warm enough)
-        now = datetime.now()
-        current_hour = now.hour
-        hours_left = 24 - current_hour
-        hours_needed = max(0, self.daily_hours_target - self.hours_run_today)
-
-        # How many schedule-tier hours remain from this hour onward (inclusive)?
-        # When the day-ahead schedule is available we subtract future scheduled
-        # hours from must-run's view of "hours needed", because those hours will
-        # be delivered by the normal schedule without any override. This prevents
-        # a stale/reset hours_run_today from triggering must-run unnecessarily —
-        # for example after a component update or HA restart mid-day.
-        schedule_built = bool(self._daily_schedule or self._daily_low_schedule)
-        future_scheduled = sum(
-            1 for h in range(current_hour, 24)
-            if h in self._daily_schedule or h in self._daily_low_schedule
-        ) if schedule_built else 0
-
-        # Must-run fires only when the schedule cannot cover the remaining gap.
-        # Effective_needed = gap that the schedule won't fill on its own.
-        effective_needed = max(0, hours_needed - future_scheduled)
-        must_run = effective_needed > 0 and effective_needed >= hours_left
-
-        if must_run:
-            # During peak-price hours the daily target is sacrificed — running MEDIUM
-            # just to hit the counter would cost significantly more than the filtration
-            # benefit. The pump still circulates at LOW (minimum-LOW rule, step 10).
-            is_peak = self._state_is_on(CONF_BINARY_PEAK_PRICE)
-            if is_peak:
-                _LOGGER.debug(
-                    "Must-run needed (%d gap, %d left) but current hour is peak price — "
-                    "holding at LOW, daily target will be partially missed today",
-                    effective_needed, hours_left,
-                )
-                desired = MODE_LOW
-            else:
-                _LOGGER.debug(
-                    "Must-run override: need %d hours, %d scheduled, %d effective gap, "
-                    "%d left today",
-                    hours_needed, future_scheduled, effective_needed, hours_left,
-                )
-                desired = MODE_MEDIUM
-
-        elif self._maybe_rebuild_schedule():
-            # ── Day-ahead mode ──────────────────────────────────────────────
-            # Full 24-hour price list available.
-            # Cheapest N hours (daily_hours) → MEDIUM: proper daily circulation.
-            # Next M hours (daily_low_hours) → LOW: light background trickle.
-            # Everything else → OFF.
-            # HIGH is reserved exclusively for the extra-filter switch.
-            if current_hour in self._daily_schedule:
-                _LOGGER.debug(
-                    "Hour %02d is in MEDIUM day-ahead schedule — running MEDIUM",
-                    current_hour,
-                )
-                desired = MODE_MEDIUM
-            elif current_hour in self._daily_low_schedule:
-                _LOGGER.debug(
-                    "Hour %02d is in LOW day-ahead schedule — running LOW", current_hour
-                )
-                desired = MODE_LOW
-            else:
-                _LOGGER.debug(
-                    "Hour %02d not in day-ahead schedule — off", current_hour
-                )
-                desired = MODE_OFF
-
-        else:
-            # ── Reactive fallback ────────────────────────────────────────────
-            # Price sensor does not expose a 'today' attribute (e.g. Tibber,
-            # or Nordpool before midnight publication). Fall back to the binary
-            # best-price / peak-price sensors.
-            # best-price → MEDIUM (daily target hours), normal → LOW if still
-            # needed, peak → OFF.
-            is_peak = self._state_is_on(CONF_BINARY_PEAK_PRICE)
-            is_best = self._state_is_on(CONF_BINARY_BEST_PRICE)
-            low_hours_target = self.daily_low_hours_target
-            _LOGGER.debug(
-                "Reactive mode: is_best=%s is_peak=%s hours_needed=%d",
-                is_best, is_peak, hours_needed,
-            )
-            if is_peak:
-                desired = MODE_OFF
-            elif is_best:
-                desired = MODE_MEDIUM
-            elif hours_needed > 0:
-                desired = MODE_MEDIUM
-            elif low_hours_target > 0:
-                # Daily MEDIUM target met but LOW background still desired
-                desired = MODE_LOW
-            else:
-                desired = MODE_OFF
-
-        # 7. Cooldown — don't turn on if pump was recently switched off.
-        #    Only applies when going from OFF → ON; ignored when pool forces minimum LOW.
-        if desired != MODE_OFF and self.current_mode == MODE_OFF and self._in_cooldown():
-            remaining = self._cooldown_remaining_seconds()
-            _LOGGER.debug(
-                "Cooldown active: holding pump off for %d more seconds", remaining
-            )
-            desired = MODE_OFF
-
-        # 8. Minimum LOW override — when pool temp is above the algae threshold the
-        #    pump must always circulate at least at LOW speed to keep the water clean
-        #    and prevent stagnation.  This overrides peak price, cooldown, and every
-        #    other reason to stop completely.  Only bypassed by:
-        #      • automation disabled (step 3 returns early)
-        #      • pool cold / algae skip (step 5 returns early)
-        if desired == MODE_OFF and self._scheduling_active():
-            _LOGGER.debug(
-                "Pool warm: minimum LOW applied — pump never fully off above algae threshold"
-            )
-            desired = MODE_LOW
-
-        return desired
-
-    # ------------------------------------------------------------------
-    # Mode application
-    # ------------------------------------------------------------------
     async def async_evaluate_mode(self) -> None:
-        """Decide and apply the correct mode. Called hourly and on startup."""
-        target = self._decide_mode()
-        if target != self.current_mode:
-            await self.async_set_mode(target)
-        else:
-            # Mode unchanged — but heat pump target temp may still need updating
-            # (e.g. pool temp crossed the heating threshold without a mode change)
-            await self._update_heat_pump(self.current_mode)
+        """Decide the mode and bring the devices in line with it."""
+        if not self._ready:
             self.async_set_updated_data(self._build_data())
+            return
+        async with self._lock:
+            if self._sensors_pending():
+                _LOGGER.debug("Waiting for temperature sensors after start")
+                return
+            now = dt_util.now()
+            d = decide(self._inputs(now), self._settings())
+            self._decision = d
 
-    async def async_set_mode(self, mode: str) -> None:
-        """Apply a circulation mode to all physical devices."""
-        _LOGGER.info("Mode change: %s → %s", self.current_mode, mode)
-        previous = self.current_mode
+            if d.safety != self._safety:
+                if d.safety:
+                    _LOGGER.warning("Safety guard active: %s — %s", d.safety, d.reason)
+                else:
+                    _LOGGER.info("Safety guard %s released", self._safety)
+                self._safety = d.safety
+                self.hass.async_create_task(self._save_state())
+
+            if d.mode != self.current_mode:
+                self._change_mode(d)
+            if d.enforce:
+                await self._apply_devices(self.current_mode)
+            await self._update_heat_pump(self.current_mode)
+
+        self.async_set_updated_data(self._build_data())
+
+    def _change_mode(self, d: Decision) -> None:
+        previous, mode = self.current_mode, d.mode
+        _LOGGER.info("Mode %s → %s (%s: %s)", previous, mode, d.rule, d.reason)
         self.current_mode = mode
-
-        # Record timestamps for cooldown and min-on enforcement
+        now = dt_util.now()
         if mode == MODE_OFF and previous != MODE_OFF:
-            self._last_turned_off = datetime.now()
-            _LOGGER.debug("Pump turned off — cooldown starts now")
+            self._last_turned_off = now
         elif mode != MODE_OFF and previous == MODE_OFF:
-            self._last_turned_on = datetime.now()
-            _LOGGER.debug("Pump turned on — min-on timer starts now")
-
-        # --- Circulation pump ---
-        circ = self.cfg.get(CONF_SWITCH_CIRCULATION)
-        if circ:
-            if mode == MODE_OFF:
-                await self._switch(circ, False)
-            else:
-                await self._switch(circ, True)
-
-        # --- RPM switches (mutually exclusive) ---
-        rpm_map = {
-            MODE_LOW: CONF_SWITCH_RPM_LOW,
-            MODE_MEDIUM: CONF_SWITCH_RPM_MEDIUM,
-            MODE_HIGH: CONF_SWITCH_RPM_HIGH,
-        }
-        for m, conf_key in rpm_map.items():
-            entity = self.cfg.get(conf_key)
-            if entity:
-                await self._switch(entity, mode == m)
-
-        # --- Heat pump ---
-        await self._update_heat_pump(mode)
-
-        # --- UV lamp ---
-        await self._update_uv_lamp(mode)
-
+            self._last_turned_on = now
         self.hass.bus.async_fire(
             EVENT_MODE_CHANGED,
             {
                 "previous_mode": previous,
                 "mode": mode,
+                "season": self.season,
+                "rule": d.rule,
+                "reason": d.reason,
                 "hours_run_today": self.hours_run_today,
-                "daily_target": self.daily_hours_target,
+                "daily_target": d.target_hours,
             },
         )
-
         self.hass.async_create_task(self._save_state())
+
+    async def async_set_mode(self, mode: str) -> None:
+        """Force a mode on the devices (kept for compatibility with older callers)."""
+        self._change_mode(Decision(mode=mode, rule="manual", reason="Set directly"))
+        await self._apply_devices(mode)
         self.async_set_updated_data(self._build_data())
 
-    async def _switch(self, entity_id: str, on: bool) -> None:
-        service = "turn_on" if on else "turn_off"
-        await self.hass.services.async_call(
-            "switch", service, {"entity_id": entity_id}, blocking=True
-        )
+    async def _apply_devices(self, mode: str) -> None:
+        """Command only the switches that differ from what *mode* needs."""
+        cfg = self.cfg
+        circ = cfg.get(CONF_SWITCH_CIRCULATION)
+        rpm = {
+            MODE_LOW: cfg.get(CONF_SWITCH_RPM_LOW),
+            MODE_MEDIUM: cfg.get(CONF_SWITCH_RPM_MEDIUM),
+            MODE_HIGH: cfg.get(CONF_SWITCH_RPM_HIGH),
+        }
+        if circ:
+            await self._ensure(circ, mode != MODE_OFF)
+        # Turn the unwanted speeds off before the wanted one on (interlocked relays)
+        for m, entity in rpm.items():
+            if entity and m != mode:
+                await self._ensure(entity, False)
+        if rpm.get(mode):
+            await self._ensure(rpm[mode], True)
+        await self._update_uv_lamp(mode)
+
+    async def _ensure(self, entity_id: str, on: bool) -> bool:
+        """Switch *entity_id* to on/off if it is not already. Returns True if commanded."""
+        state = self.hass.states.get(entity_id)
+        if state is None or state.state in _UNAVAILABLE:
+            if entity_id not in self._failed_entities:
+                self._failed_entities.add(entity_id)
+                _LOGGER.warning("%s is unavailable — will retry when it returns", entity_id)
+            return False
+        if state.state == ("on" if on else "off"):
+            self._failed_entities.discard(entity_id)
+            return False
+        domain = entity_id.split(".", 1)[0]
+        try:
+            await self.hass.services.async_call(
+                domain, "turn_on" if on else "turn_off", {"entity_id": entity_id}, blocking=True
+            )
+        except Exception as err:  # noqa: BLE001 — device integrations raise anything
+            if entity_id not in self._failed_entities:
+                self._failed_entities.add(entity_id)
+                _LOGGER.warning("Could not switch %s %s: %s", entity_id, "on" if on else "off", err)
+            return False
+        self._failed_entities.discard(entity_id)
+        _LOGGER.debug("%s → %s", entity_id, "on" if on else "off")
+        return True
 
     # ------------------------------------------------------------------
     # Heat pump
     # ------------------------------------------------------------------
     async def _update_heat_pump(self, mode: str) -> None:
-        """Set heat pump target temperature based on current price tier.
+        """Summer: keep the heat pump on with a price-dependent target temperature.
 
-        Summer: the heat pump is NEVER switched off — it always stays on and
-        manages its own temperature control. Only the target temperature changes:
+        - MEDIUM / HIGH (cheap hours, extra filter, cover burst) → best-price target
+        - LOW / OFF → normal target
 
-        - HIGH / MEDIUM  (cheap hours / extra filter / cover burst)
-                         → best-price target temp (default 31°C)
-                           Maximum heating during cheapest electricity.
-        - LOW / OFF      (background / off-peak / standby)
-                         → normal target temp (default 30°C)
-                           Maintains pool temperature without peak consumption.
+        Only commands what differs from the heat pump's current state, so the
+        minute tick does not hammer cloud APIs.
 
-        Winter: the heat pump is left completely alone — no service calls at
-        all. It is typically powered down / offline for the season and any
-        call would only time out. Circulation is unaffected.
-
-        Heat pump failures are logged and swallowed so they never block
-        circulation, UV lamp or state updates.
+        Winter: the heat pump is left completely alone — it is typically powered
+        down for the season and any call would only time out.
         """
         hp = self.cfg.get(CONF_CLIMATE_HEAT_PUMP)
         if not hp or self.winter_mode:
             return
+        state = self.hass.states.get(hp)
+        if state is None or state.state in _UNAVAILABLE:
+            return
 
-        best_price_temp = float(self.cfg.get(CONF_HP_TEMP_BEST_PRICE, DEFAULT_HP_TEMP_BEST_PRICE))
-        normal_temp = float(self.cfg.get(CONF_HP_TEMP_NORMAL, DEFAULT_HP_TEMP_NORMAL))
-
-        target_temp = best_price_temp if mode in (MODE_HIGH, MODE_MEDIUM) else normal_temp
+        best = float(self.cfg.get(CONF_HP_TEMP_BEST_PRICE, DEFAULT_HP_TEMP_BEST_PRICE))
+        normal = float(self.cfg.get(CONF_HP_TEMP_NORMAL, DEFAULT_HP_TEMP_NORMAL))
+        target = best if mode in (MODE_HIGH, MODE_MEDIUM) else normal
 
         try:
-            await self.hass.services.async_call(
-                "climate",
-                "set_temperature",
-                {"entity_id": hp, "temperature": target_temp},
-                blocking=True,
-            )
-            await self.hass.services.async_call(
-                "climate", "turn_on", {"entity_id": hp}, blocking=True
-            )
+            current = state.attributes.get("temperature")
+            if current is None or abs(float(current) - target) > 0.05:
+                await self.hass.services.async_call(
+                    "climate", "set_temperature",
+                    {"entity_id": hp, "temperature": target}, blocking=True,
+                )
+                _LOGGER.debug("Heat pump target → %.1f°C (mode=%s)", target, mode)
+            if state.state == "off":
+                await self.hass.services.async_call(
+                    "climate", "turn_on", {"entity_id": hp}, blocking=True
+                )
+                _LOGGER.debug("Heat pump turned on")
+            self._failed_entities.discard(hp)
         except Exception as err:  # noqa: BLE001 — third-party climate integrations raise anything
-            _LOGGER.warning("Heat pump %s did not respond: %s", hp, err)
-            return
-        _LOGGER.debug("Heat pump ON: mode=%s, target=%.1f°C", mode, target_temp)
+            if hp not in self._failed_entities:
+                self._failed_entities.add(hp)
+                _LOGGER.warning("Heat pump %s did not respond: %s", hp, err)
 
     # ------------------------------------------------------------------
     # UV lamp
     # ------------------------------------------------------------------
     async def _update_uv_lamp(self, mode: str) -> None:
-        """Control UV lamp: on when pump is running and pool cover is not open."""
+        """UV lamp on while the pump runs and the pool cover is not open."""
         uv = self.cfg.get(CONF_SWITCH_UV_LAMP)
         if not uv:
             return
-
         cover = self.cfg.get(CONF_COVER_POOL)
-        cover_open = False
-        if cover:
-            state = self.hass.states.get(cover)
-            cover_open = state is not None and state.state == "open"
-
+        cover_state = self.hass.states.get(cover) if cover else None
+        cover_open = cover_state is not None and cover_state.state == "open"
         uv_on = mode != MODE_OFF and not cover_open
-        previous_uv = self._uv_is_on()
-
-        await self._switch(uv, uv_on)
-
-        if uv_on != previous_uv:
-            _LOGGER.debug("UV lamp: %s (mode=%s, cover_open=%s)", "on" if uv_on else "off", mode, cover_open)
+        if await self._ensure(uv, uv_on):
             self.hass.bus.async_fire(
                 EVENT_UV_CHANGED,
-                {
-                    "uv_on": uv_on,
-                    "mode": mode,
-                    "cover_open": cover_open,
-                    "active_rpm": self._active_rpm(),
-                },
+                {"uv_on": uv_on, "mode": mode, "cover_open": cover_open, "active_rpm": self._active_rpm()},
             )
 
-    def _uv_is_on(self) -> bool:
-        """Return True if the UV lamp switch is currently on."""
-        uv = self.cfg.get(CONF_SWITCH_UV_LAMP)
-        if not uv:
-            return False
-        state = self.hass.states.get(uv)
-        return state is not None and state.state == "on"
+    # ------------------------------------------------------------------
+    # Timers
+    # ------------------------------------------------------------------
+    def _in_cooldown(self) -> bool:
+        return self._cooldown_remaining_seconds() > 0
+
+    def _cooldown_remaining_seconds(self) -> int:
+        cooldown = int(self.cfg.get(CONF_COOLDOWN_MINUTES, DEFAULT_COOLDOWN_MINUTES))
+        if cooldown == 0 or self._last_turned_off is None:
+            return 0
+        elapsed = (dt_util.now() - self._last_turned_off).total_seconds()
+        return max(0, int(cooldown * 60 - elapsed))
+
+    def _in_min_on(self) -> bool:
+        return self._min_on_remaining_seconds() > 0
+
+    def _min_on_remaining_seconds(self) -> int:
+        min_on = int(self.cfg.get(CONF_MIN_ON_MINUTES, DEFAULT_MIN_ON_MINUTES))
+        if min_on == 0 or self._last_turned_on is None:
+            return 0
+        elapsed = (dt_util.now() - self._last_turned_on).total_seconds()
+        return max(0, int(min_on * 60 - elapsed))
+
+    @staticmethod
+    def _remaining_seconds(until: datetime | None) -> int:
+        if until is None:
+            return 0
+        return max(0, int((until - dt_util.now()).total_seconds()))
 
     # ------------------------------------------------------------------
     # State helpers
     # ------------------------------------------------------------------
-    def _active_rpm(self) -> int:
-        """Return current RPM.
+    def _pump_running(self) -> bool:
+        circ = self.cfg.get(CONF_SWITCH_CIRCULATION)
+        if not circ:
+            return self.current_mode != MODE_OFF
+        state = self.hass.states.get(circ)
+        return state is not None and state.state == "on"
 
-        If an actual RPM sensor is configured, read it directly (e.g. an ESPHome
-        sensor that reads the inverter frequency).  Falls back to the switch-derived
-        value — returns the configured RPM number for whichever RPM switch is on,
-        or 0 when the pump is off.
-        """
-        # Prefer actual sensor reading
+    def _active_rpm(self) -> int:
+        """Current RPM — from the actual RPM sensor if configured, else the active speed switch."""
         actual_rpm_entity = self.cfg.get(CONF_SENSOR_ACTUAL_RPM)
         if actual_rpm_entity:
             state = self.hass.states.get(actual_rpm_entity)
-            if state and state.state not in ("unavailable", "unknown", ""):
+            if state and state.state not in _UNAVAILABLE:
                 try:
                     return int(float(state.state))
                 except ValueError:
                     pass
 
-        # Fall back to switch-derived RPM
         for switch_key, rpm_key, default in (
             (CONF_SWITCH_RPM_HIGH,   CONF_RPM_HIGH,   DEFAULT_RPM_HIGH),
             (CONF_SWITCH_RPM_MEDIUM, CONF_RPM_MEDIUM, DEFAULT_RPM_MEDIUM),
@@ -1287,7 +779,6 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         return 0
 
     def _hp_state(self) -> str | None:
-        """Current HVAC mode of the heat pump climate entity."""
         hp = self.cfg.get(CONF_CLIMATE_HEAT_PUMP)
         if not hp:
             return None
@@ -1295,14 +786,11 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         return state.state if state else None
 
     def _hp_attr(self, attr: str):
-        """Read an attribute from the heat pump climate entity."""
         hp = self.cfg.get(CONF_CLIMATE_HEAT_PUMP)
         if not hp:
             return None
         state = self.hass.states.get(hp)
-        if not state:
-            return None
-        return state.attributes.get(attr)
+        return state.attributes.get(attr) if state else None
 
     def _state_is_on(self, conf_key: str) -> bool:
         entity_id = self.cfg.get(conf_key)
@@ -1316,7 +804,7 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         if not entity_id:
             return None
         state = self.hass.states.get(entity_id)
-        if state is None or state.state in ("unavailable", "unknown", ""):
+        if state is None or state.state in _UNAVAILABLE:
             return None
         try:
             return float(state.state)
@@ -1330,73 +818,105 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         state = self.hass.states.get(entity_id)
         return state.state if state else None
 
+    def _entities(self) -> dict[str, str | None]:
+        """Entity IDs the cards need — own entities via the registry, devices from config."""
+        if not self._entity_ids or None in self._entity_ids.values():
+            reg = er.async_get(self.hass)
+            ids: dict[str, str | None] = {
+                key: reg.async_get_entity_id(domain, DOMAIN, f"{self.entry.entry_id}_{suffix}")
+                for key, (domain, suffix) in _OWN_ENTITIES.items()
+            }
+            self._entity_ids = ids
+        cfg = self.cfg
+        return {
+            **self._entity_ids,
+            "pool_temp": cfg.get(CONF_SENSOR_POOL_TEMP) or None,
+            "outdoor_temp": cfg.get(CONF_SENSOR_OUTDOOR_TEMP) or None,
+            "circulation": cfg.get(CONF_SWITCH_CIRCULATION) or None,
+            "heat_pump": cfg.get(CONF_CLIMATE_HEAT_PUMP) or None,
+        }
+
     # ------------------------------------------------------------------
     # Data snapshot
     # ------------------------------------------------------------------
     def _build_data(self) -> dict:
-        now = datetime.now()
-        current_hour = now.hour
-        hours_left = 24 - current_hour
-        hours_needed = max(0, self.daily_hours_target - self.hours_run_today)
-        schedule_built = bool(self._daily_schedule or self._daily_low_schedule)
-        future_scheduled = sum(
-            1 for h in range(current_hour, 24)
-            if h in self._daily_schedule or h in self._daily_low_schedule
-        ) if schedule_built else 0
-        effective_needed = max(0, hours_needed - future_scheduled)
+        now = dt_util.now()
+        s = self._settings()
+        d = self._decision
+        pool = self._state_float(CONF_SENSOR_POOL_TEMP)
+        outdoor = self._state_float(CONF_SENSOR_OUTDOOR_TEMP)
+        prices = self._prices if self._prices_day == now.date() else None
+        target = d.target_hours if d else None
+        done = d.done_hours if d else 0.0
+
+        plan = [
+            {
+                "hour": h,
+                "price": None if not prices or prices[h] == INF else round(prices[h], 4),
+                "mode": d.plan[h] if d and d.plan else None,
+            }
+            for h in range(24)
+        ]
+        planned = [p["hour"] for p in plan]
+
         return {
             "mode": self.current_mode,
-            "automation_enabled": self.automation_enabled,
+            "season": self.season,
             "winter_mode": self.winter_mode,
-            "season": "winter" if self.winter_mode else "summer",
+            "rule": d.rule if d else ("starting" if not self._ready else None),
+            "reason": d.reason if d else "Waiting for Home Assistant to start",
+            "safety": d.safety if d else self._safety,
+            "winter_tier": d.tier if d else None,
+            "automation_enabled": self.automation_enabled,
             "extra_filter_active": self.extra_filter_active,
+            "extra_filter_remaining": self._remaining_seconds(self._extra_filter_until),
             "cover_circulation_active": self.cover_circulation_active,
             "hours_run_today": self.hours_run_today,
             "hours_low_today": self.hours_low_today,
-            "hours_remaining": hours_needed,
+            "hours_total_today": round((self._minutes_run + self._minutes_low) / 60, 2),
+            "target_hours": target,
+            "done_hours": done,
+            "hours_remaining": round(max(0.0, (target or 0) - done), 2),
             "daily_target": self.daily_hours_target,
+            "must_run": d.must_run if d else False,
             "price": self._state_float(CONF_SENSOR_PRICE),
             "price_level": self._state_str(CONF_SENSOR_PRICE_LEVEL),
             "is_best_price": self._state_is_on(CONF_BINARY_BEST_PRICE),
             "is_peak_price": self._state_is_on(CONF_BINARY_PEAK_PRICE),
-            "must_run": effective_needed > 0 and effective_needed >= hours_left,
-            "must_run_peak_suppressed": (
-                effective_needed > 0 and effective_needed >= hours_left
-                and self._state_is_on(CONF_BINARY_PEAK_PRICE)
-            ),
-            "too_cold": self._too_cold_to_circulate(),
-            "outdoor_buffer_active": self._outdoor_buffer_active(),
-            "scheduling_active": self._scheduling_active(),
-            "freeze_risk": self._freeze_risk(),
+            "too_cold": pool is not None and pool < s.algae,
+            "freeze_risk": bool(d and d.safety),
             "in_cooldown": self._in_cooldown(),
             "cooldown_remaining": self._cooldown_remaining_seconds(),
             "in_min_on": self._in_min_on(),
             "min_on_remaining": self._min_on_remaining_seconds(),
-            "outdoor_temp": self._state_float(CONF_SENSOR_OUTDOOR_TEMP),
-            "pool_temp": self._state_float(CONF_SENSOR_POOL_TEMP),
+            "outdoor_temp": outdoor,
+            "pool_temp": pool,
+            "thresholds": {
+                "pool_critical": s.pool_critical,
+                "algae": s.algae,
+                "freeze": s.freeze,
+                "buffer": s.buffer,
+            },
             "active_rpm": self._active_rpm(),
-            "uv_on": self._uv_is_on(),
+            "pump_running": self._pump_running(),
+            "uv_on": self._state_is_on(CONF_SWITCH_UV_LAMP),
             "hp_mode": self._hp_state(),
             "hp_current_temp": self._hp_attr("current_temperature"),
             "hp_target_temp": self._hp_attr("temperature"),
             "hp_fan_mode": self._hp_attr("fan_mode"),
-            "pool_heating_active": (
-                not self.winter_mode
-                and self._state_float(CONF_SENSOR_POOL_TEMP) is not None
-                and (self._state_float(CONF_SENSOR_POOL_TEMP) or 999)
-                < float(self.cfg.get(CONF_POOL_TEMP_HEATING_THRESHOLD, DEFAULT_POOL_TEMP_HEATING_THRESHOLD))
-            ),
-            # Day-ahead schedule info
-            "schedule_available": bool(self._daily_schedule or self._daily_low_schedule),
-            "scheduled_high_hours": sorted(self._daily_schedule),
-            "scheduled_low_hours": sorted(self._daily_low_schedule),
-            # Comma-separated HH:00 string — matches old sensor.pool_pump_schedule format
+            "schedule_available": bool(d and d.plan),
+            "plan": plan,
+            "scheduled_high_hours": [h for h in planned if d and d.plan and d.plan[h] in (MODE_MEDIUM, MODE_HIGH)],
+            "scheduled_low_hours": [h for h in planned if d and d.plan and d.plan[h] == MODE_LOW],
+            # Comma-separated HH:00 strings — old sensor.pool_pump_schedule format
             "scheduled_medium_str": ",".join(
-                f"{h:02d}:00" for h in sorted(self._daily_schedule)
+                f"{h:02d}:00" for h in planned if d and d.plan and d.plan[h] in (MODE_MEDIUM, MODE_HIGH)
             ),
             "scheduled_low_str": ",".join(
-                f"{h:02d}:00" for h in sorted(self._daily_low_schedule)
+                f"{h:02d}:00" for h in planned if d and d.plan and d.plan[h] == MODE_LOW
             ),
+            "unavailable_entities": sorted(self._failed_entities),
+            "entities": self._entities(),
         }
 
     async def _async_update_data(self) -> dict:

@@ -49,22 +49,20 @@ class PoolCirculationAutomationSwitch(CoordinatorEntity, SwitchEntity):
         return self.coordinator.automation_enabled
 
     async def async_turn_on(self, **kwargs) -> None:
-        self.coordinator.automation_enabled = True
-        self.hass.async_create_task(self.coordinator._save_state())
-        await self.coordinator.async_evaluate_mode()
+        await self.coordinator.async_set_automation(True)
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs) -> None:
-        self.coordinator.automation_enabled = False
-        self.hass.async_create_task(self.coordinator._save_state())
+        await self.coordinator.async_set_automation(False)
         self.async_write_ha_state()
 
 
 class PoolExtraFilterSwitch(CoordinatorEntity, SwitchEntity):
     """Activate extra filter mode — forces high RPM for a configurable duration.
 
-    Useful after bathing to run extra filtration. Overrides price logic but not
-    freeze protection. Auto-disables after the configured duration (default 60 min).
+    Useful after bathing to run extra filtration. Overrides price logic and
+    runs faster than any freeze guard. Auto-disables after the configured
+    duration (default 60 min) — also across HA restarts.
     """
 
     def __init__(self, coordinator: PoolCirculationCoordinator, entry: ConfigEntry) -> None:
@@ -83,6 +81,7 @@ class PoolExtraFilterSwitch(CoordinatorEntity, SwitchEntity):
     def extra_state_attributes(self) -> dict:
         return {
             "duration_minutes": self.coordinator.extra_filter_duration,
+            "remaining_seconds": (self.coordinator.data or {}).get("extra_filter_remaining", 0),
         }
 
     async def async_turn_on(self, **kwargs) -> None:
@@ -98,9 +97,10 @@ class PoolWinterModeSwitch(CoordinatorEntity, SwitchEntity):
     """Winter / summer season toggle.
 
     On (winter): heat pump is not touched at all (it is usually offline for
-    the season — turn it off yourself). Circulation logic —
-    schedule, freeze protection, extra filter, cover burst — runs as usual.
-    Off (summer): heat pump is managed by price tier as normal.
+    the season — turn it off yourself). Circulation follows the winter rules:
+    frost and pool-temperature guards first, then price-optimised low-speed
+    running depending on outdoor and pool temperature.
+    Off (summer): daily filtration hours + heat pump managed by price.
     """
 
     def __init__(self, coordinator: PoolCirculationCoordinator, entry: ConfigEntry) -> None:
@@ -125,7 +125,5 @@ class PoolWinterModeSwitch(CoordinatorEntity, SwitchEntity):
         await self._set(False)
 
     async def _set(self, winter: bool) -> None:
-        self.coordinator.winter_mode = winter
-        self.hass.async_create_task(self.coordinator._save_state())
-        await self.coordinator.async_evaluate_mode()
+        await self.coordinator.async_set_winter_mode(winter)
         self.async_write_ha_state()

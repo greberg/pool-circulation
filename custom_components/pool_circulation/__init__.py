@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
@@ -22,7 +23,9 @@ from .const import (
     CONF_SWITCH_RPM_LOW,
     CONF_SWITCH_RPM_MEDIUM,
     CONF_SWITCH_UV_LAMP,
+    CARD_URL,
     DOMAIN,
+    VERSION,
 )
 from .coordinator import PoolCirculationCoordinator
 
@@ -54,8 +57,28 @@ _RELOAD_REQUIRED_OPTIONS = {
 }
 
 
+async def _async_register_card(hass: HomeAssistant) -> None:
+    """Serve the bundled Lovelace cards and load them on every dashboard."""
+    if hass.data.get(f"{DOMAIN}_card_registered") or hass.http is None:
+        return
+    hass.data[f"{DOMAIN}_card_registered"] = True
+    path = str(Path(__file__).parent / "www" / "pool-circulation-card.js")
+    try:
+        from homeassistant.components.http import StaticPathConfig
+
+        await hass.http.async_register_static_paths([StaticPathConfig(CARD_URL, path, False)])
+    except ImportError:  # HA < 2024.7
+        hass.http.register_static_path(CARD_URL, path, False)
+
+    from homeassistant.components.frontend import add_extra_js_url
+
+    # Version in the URL so browsers pick up a new card after an update
+    add_extra_js_url(hass, f"{CARD_URL}?v={VERSION}")
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
+    await _async_register_card(hass)
 
     coordinator = PoolCirculationCoordinator(hass, entry)
     await coordinator.async_setup()

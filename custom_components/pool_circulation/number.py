@@ -15,8 +15,14 @@ from .const import (
     CONF_HP_TEMP_BEST_PRICE,
     CONF_HP_TEMP_NORMAL,
     CONF_MIN_ON_MINUTES,
+    CONF_POOL_CRITICAL_TEMP,
     CONF_POOL_TEMP_HEATING_THRESHOLD,
+    CONF_TEMP_ALGAE_THRESHOLD,
+    CONF_TEMP_FREEZE_THRESHOLD,
     CONF_TEMP_OUTDOOR_BUFFER,
+    CONF_WINTER_ALGAE_HOURS,
+    CONF_WINTER_MIN_HOURS,
+    CONF_WINTER_SKIP_HOURS,
     DEFAULT_COOLDOWN_MINUTES,
     DEFAULT_DAILY_HOURS,
     DEFAULT_DAILY_LOW_HOURS,
@@ -24,8 +30,14 @@ from .const import (
     DEFAULT_HP_TEMP_BEST_PRICE,
     DEFAULT_HP_TEMP_NORMAL,
     DEFAULT_MIN_ON_MINUTES,
+    DEFAULT_POOL_CRITICAL_TEMP,
     DEFAULT_POOL_TEMP_HEATING_THRESHOLD,
+    DEFAULT_TEMP_ALGAE_THRESHOLD,
+    DEFAULT_TEMP_FREEZE_THRESHOLD,
     DEFAULT_TEMP_OUTDOOR_BUFFER,
+    DEFAULT_WINTER_ALGAE_HOURS,
+    DEFAULT_WINTER_MIN_HOURS,
+    DEFAULT_WINTER_SKIP_HOURS,
     DOMAIN,
 )
 from .coordinator import PoolCirculationCoordinator
@@ -55,6 +67,7 @@ async def async_setup_entry(
             PoolHpTempNormalNumber(coordinator, entry),
             PoolPoolHeatingThresholdNumber(coordinator, entry),
             PoolOutdoorBufferNumber(coordinator, entry),
+            *(_OptionNumber(coordinator, entry, spec) for spec in _OPTION_NUMBERS),
         ]
     )
 
@@ -320,4 +333,61 @@ class PoolOutdoorBufferNumber(CoordinatorEntity, NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         new_options = {**self._entry.options, CONF_TEMP_OUTDOOR_BUFFER: value}
+        self.hass.config_entries.async_update_entry(self._entry, options=new_options)
+
+
+# ---------------------------------------------------------------------------
+# Season / safety settings — same behaviour as the classes above, table-driven
+# (key, default, name, unique_id suffix, icon, min, max, step, unit)
+# ---------------------------------------------------------------------------
+_OPTION_NUMBERS = (
+    # Pool ≤ this → MEDIUM continuously in any season. Approaching 3 °C the
+    # circulation can fail, so keep a margin above it.
+    (CONF_POOL_CRITICAL_TEMP, DEFAULT_POOL_CRITICAL_TEMP, "Pool Critical Temperature",
+     "pool_critical_temp", "mdi:snowflake-alert", 1.0, 10.0, 0.5, "°C"),
+    # Pool below this → no algae growth, no filtration hours needed
+    (CONF_TEMP_ALGAE_THRESHOLD, DEFAULT_TEMP_ALGAE_THRESHOLD, "Pool Algae Threshold",
+     "algae_threshold", "mdi:bacteria-outline", 2.0, 20.0, 0.5, "°C"),
+    # Outdoor ≤ this → LOW continuously (frost guard)
+    (CONF_TEMP_FREEZE_THRESHOLD, DEFAULT_TEMP_FREEZE_THRESHOLD, "Pool Frost Threshold",
+     "freeze_threshold", "mdi:snowflake-thermometer", -10.0, 8.0, 0.5, "°C"),
+    # Winter, outdoor in buffer zone: how many of the priciest hours may be skipped
+    (CONF_WINTER_SKIP_HOURS, DEFAULT_WINTER_SKIP_HOURS, "Pool Winter Skip Hours",
+     "winter_skip_hours", "mdi:cash-remove", 0, 12, 1, "h"),
+    # Winter, pool ≥ algae threshold: cheapest hours at LOW per day
+    (CONF_WINTER_ALGAE_HOURS, DEFAULT_WINTER_ALGAE_HOURS, "Pool Winter Algae Hours",
+     "winter_algae_hours", "mdi:clock-plus-outline", 0, 24, 1, "h"),
+    # Winter, pool cold and outdoor mild: cheapest hours at LOW per day
+    (CONF_WINTER_MIN_HOURS, DEFAULT_WINTER_MIN_HOURS, "Pool Winter Minimum Hours",
+     "winter_min_hours", "mdi:clock-outline", 0, 24, 1, "h"),
+)
+
+
+class _OptionNumber(CoordinatorEntity, NumberEntity):
+    """Number entity backed by a config-entry option."""
+
+    def __init__(self, coordinator: PoolCirculationCoordinator, entry: ConfigEntry, spec: tuple) -> None:
+        super().__init__(coordinator)
+        key, default, name, suffix, icon, lo, hi, step, unit = spec
+        self._entry = entry
+        self._key = key
+        self._default = default
+        self._is_int = isinstance(step, int)
+        self._attr_name = name
+        self._attr_unique_id = f"{entry.entry_id}_{suffix}"
+        self._attr_icon = icon
+        self._attr_native_min_value = lo
+        self._attr_native_max_value = hi
+        self._attr_native_step = step
+        self._attr_native_unit_of_measurement = unit
+        self._attr_mode = NumberMode.BOX
+        self._attr_device_info = _DEVICE_INFO(entry)
+
+    @property
+    def native_value(self) -> float:
+        cfg = {**self._entry.data, **self._entry.options}
+        return cfg.get(self._key, self._default)
+
+    async def async_set_native_value(self, value: float) -> None:
+        new_options = {**self._entry.options, self._key: int(value) if self._is_int else value}
         self.hass.config_entries.async_update_entry(self._entry, options=new_options)

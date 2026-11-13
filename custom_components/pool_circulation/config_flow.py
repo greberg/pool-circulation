@@ -33,6 +33,11 @@ from .const import (
     CONF_HP_TEMP_BEST_PRICE,
     CONF_HP_TEMP_NORMAL,
     CONF_POOL_TEMP_HEATING_THRESHOLD,
+    CONF_POOL_CRITICAL_TEMP,
+    CONF_TEMP_OUTDOOR_BUFFER,
+    CONF_WINTER_ALGAE_HOURS,
+    CONF_WINTER_MIN_HOURS,
+    CONF_WINTER_SKIP_HOURS,
     DEFAULT_BINARY_BEST_PRICE,
     DEFAULT_BINARY_PEAK_PRICE,
     DEFAULT_COOLDOWN_MINUTES,
@@ -50,6 +55,11 @@ from .const import (
     DEFAULT_HP_TEMP_BEST_PRICE,
     DEFAULT_HP_TEMP_NORMAL,
     DEFAULT_POOL_TEMP_HEATING_THRESHOLD,
+    DEFAULT_POOL_CRITICAL_TEMP,
+    DEFAULT_TEMP_OUTDOOR_BUFFER,
+    DEFAULT_WINTER_ALGAE_HOURS,
+    DEFAULT_WINTER_MIN_HOURS,
+    DEFAULT_WINTER_SKIP_HOURS,
     DOMAIN,
 )
 
@@ -182,6 +192,26 @@ class PoolCirculationOptionsFlow(config_entries.OptionsFlow):
                     CONF_TEMP_FREEZE_THRESHOLD,
                     default=cfg.get(CONF_TEMP_FREEZE_THRESHOLD, DEFAULT_TEMP_FREEZE_THRESHOLD),
                 ): vol.Coerce(float),
+                vol.Optional(
+                    CONF_TEMP_OUTDOOR_BUFFER,
+                    default=cfg.get(CONF_TEMP_OUTDOOR_BUFFER, DEFAULT_TEMP_OUTDOOR_BUFFER),
+                ): vol.Coerce(float),
+                vol.Optional(
+                    CONF_POOL_CRITICAL_TEMP,
+                    default=cfg.get(CONF_POOL_CRITICAL_TEMP, DEFAULT_POOL_CRITICAL_TEMP),
+                ): vol.All(vol.Coerce(float), vol.Range(min=1, max=10)),
+                vol.Optional(
+                    CONF_WINTER_SKIP_HOURS,
+                    default=cfg.get(CONF_WINTER_SKIP_HOURS, DEFAULT_WINTER_SKIP_HOURS),
+                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=12)),
+                vol.Optional(
+                    CONF_WINTER_ALGAE_HOURS,
+                    default=cfg.get(CONF_WINTER_ALGAE_HOURS, DEFAULT_WINTER_ALGAE_HOURS),
+                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=24)),
+                vol.Optional(
+                    CONF_WINTER_MIN_HOURS,
+                    default=cfg.get(CONF_WINTER_MIN_HOURS, DEFAULT_WINTER_MIN_HOURS),
+                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=24)),
                 vol.Optional(
                     CONF_HP_TEMP_BEST_PRICE,
                     default=cfg.get(CONF_HP_TEMP_BEST_PRICE, DEFAULT_HP_TEMP_BEST_PRICE),

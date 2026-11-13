@@ -31,8 +31,18 @@
           "daily_hours": "Target circulation hours per day",
           "binary_best_price": "Best price period binary sensor",
           "binary_peak_price": "Peak price period binary sensor",
-          "sensor_price": "Current electricity price sensor"
-        }
+          "sensor_price": "Current electricity price sensor",
+          "sensor_outdoor_temp": "Outdoor temperature sensor",
+          "sensor_pool_temp": "Pool water temperature sensor",
+          "temp_algae_threshold": "Algae threshold — pool °C below which no filtration is needed",
+          "temp_freeze_threshold": "Frost threshold — outdoor °C at or below which the pump runs continuously",
+          "temp_outdoor_buffer": "Cold buffer — outdoor °C below which winter runs low speed most hours",
+          "pool_critical_temp": "Critical pool temperature — pool °C at or below which the pump runs continuously",
+          "winter_skip_hours": "Winter, cold outdoor: priciest hours that may be skipped",
+          "winter_algae_hours": "Winter, pool above algae threshold: hours per day",
+          "winter_min_hours": "Winter, cold pool and mild outdoor: minimum hours per day"
+        },
+        "description": "Summer: daily filtration hours + heat pump by price. Winter: frost and pool-temperature guards first, then price-optimised low-speed running."
       }
     }
   }

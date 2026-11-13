@@ -10,70 +10,89 @@ A Home Assistant custom component that automatically controls your pool circulat
 
 | Feature | Details |
 |---|---|
-| **Price-based scheduling** | Runs at high RPM + heat pump during best-price windows; stops during peak prices |
-| **Daily hours guarantee** | Must-run override kicks in when the daily target can't be met any other way |
-| **Algae skip** | Skips circulation when pool water temp is below the algae growth threshold |
-| **Freeze protection** | Forces low-speed circulation when outdoor temp drops to freeze threshold — overrides everything |
-| **Extra filter mode** | On-demand switch that forces high RPM for a configurable duration, then auto-disables |
-| **Pump cooldown** | Configurable minimum wait before pump can turn back on after stopping — prevents rapid on/off cycling |
-| **Minimum on-time** | Configurable minimum time pump must stay on once started — prevents brief on/off bursts |
-| **UV lamp control** | Automatically turns UV lamp on when pump is running and pool cover is not open |
-| **Heat pump control** | Turns heat pump on/off and sets target temperature based on price period and pool temperature |
-| **Winter / summer mode** | Winter mode stops all heat pump control while circulation keeps following the schedule and freeze protection |
-| **3-speed RPM control** | Maps low / medium / high RPM to individual switches; shows 0 when pump is off |
-| **Persisted state** | Daily hours counter survives HA restarts; resets at midnight |
-| **Automation switch** | Pause the scheduler without changing any other config |
-| **Editable targets** | Adjust daily hours and extra filter duration from the HA UI without reconfiguring |
+| **Summer and winter** | Two explicit seasons with their own rules — switch with `switch.pool_winter_mode` or the season toggle on the card |
+| **Freeze guards** | Pool water near 3°C or outdoor frost → continuous circulation, regardless of price, timers or manual mode, in any season |
+| **Price-optimised** | Summer: cheapest hours at medium speed. Winter: low speed, skipping or choosing hours by price |
+| **Restart-safe** | Runtime, season, timers and today's prices are persisted; devices are re-checked every minute and re-applied after a controller reboot |
+| **Algae skip** | Below the algae threshold (default 7°C pool water) no filtration hours are needed |
+| **Extra filter mode** | High speed for a configurable time, survives HA restarts |
+| **Cover burst** | 5 min high speed when the pool cover is opened |
+| **Heat pump (summer)** | Kept on, target temperature by price. Winter: never touched |
+| **UV lamp control** | On while the pump runs and the cover is not open |
+| **Pump cooldown / min on-time** | Prevents rapid on/off cycling |
+| **Lovelace cards** | Status card and day-plan card bundled with the integration — no extra install |
+| **15-minute prices** | Quarter-hour price lists (Nordpool since Oct 2025) are averaged per hour |
 | **HACS compatible** | Install and update via HACS |
 
 ---
 
 ## How It Works
 
-### Day-ahead scheduling
+Every minute (and immediately when a temperature, price window or device changes) the integration decides a mode — `off`, `low`, `medium` or `high` — and brings the switches in line with it. Only switches that differ are commanded, so nothing is spammed.
 
-At the start of each day (midnight, or when HA first starts) the coordinator reads the `today` attribute from the configured price sensor — a list of 24 hourly prices published by Nordpool and most other integrations. It ranks all 24 hours by price and locks in the cheapest N hours as the run schedule for the day (N = daily hours target). Each hourly evaluation then simply checks whether the current hour is in the pre-planned schedule.
+The sensor `sensor.pool_circulation_reason` always says, in plain words, why the pump is doing what it does.
 
-This means the pump always runs during the globally cheapest window for the day, not just reactively when the current hour happens to be "best price". The must-run safety net at the end of the day becomes the exception rather than the rule.
+### Safety guards — both seasons, always first
 
-If the price sensor does not expose a `today` attribute (e.g. some Tibber setups), the scheduler falls back to the reactive binary-sensor mode (best-price / peak-price signals) automatically.
+| Guard | Condition | Pump |
+|---|---|---|
+| **Pool critical** | Pool water ≤ critical temp (default **4°C** — circulation can fail approaching 3°C) | `medium`, continuously |
+| **Frost** | Outdoor ≤ frost threshold (default **2°C**) | `low`, continuously |
+| **Sensor failsafe** | Winter and no outdoor temperature reading | `low`, continuously |
 
-Two speed tiers are supported:
-- **MEDIUM** (daily target hours): the cheapest N hours from the full day are selected and the pump runs at medium speed — thorough filtration with the heat pump active at best-price target temperature.
-- **LOW** (optional background hours): the next cheapest M hours (outside the MEDIUM set) run at low speed — light background trickle at moderate prices. M defaults to 0; set it in the dashboard to add continuous light circulation around the main filtration window.
+Guards ignore price, cooldown, minimum on-time and the automation switch. They release only once the reading is 0.5°C above the threshold, so the pump does not flap. Extra filter and the cover burst still win, since they run faster anyway.
 
-HIGH speed is reserved exclusively for the **extra filter switch** (user-triggered intensive filtration).
+### Summer
 
-The active schedule is visible on the `sensor.pool_circulation_mode` entity as `scheduled_high_hours` and `scheduled_low_hours` attributes — lists of the 24-hour clock hours (0–23) planned for each tier today.
+1. Pool water below the algae threshold (default 7°C) → `off`, or `low` if outdoor is in the cold buffer zone (frost – 4°C)
+2. Cheapest *daily hours* (default 8) → `medium`, heat pump at its best-price target
+3. Every other hour → `low` — a warm pool is never left standing
+4. Behind on daily hours late in the day → catch up at `medium` (only `low` during peak price)
+5. No 24-hour price list → follow the best/peak price binary sensors
 
-### Hourly evaluation
+### Winter
 
-Every hour at HH:00, the coordinator re-evaluates and sets one of four modes:
+The heat pump is left completely alone (power it down yourself). Circulation depends on the outdoor and pool temperature:
 
-| Mode | Condition | Circulation | Heat pump | UV lamp |
-|---|---|---|---|---|
-| `low` | **Freeze protection** — outdoor temp ≤ freeze threshold | Low RPM ON | ON if pool cold | ON |
-| `high` | Extra filter active (user-triggered only) | High RPM switch ON | ON at best-price target temp | ON |
-| `medium` | Current hour is in day-ahead MEDIUM tier (cheapest N hours) **or** must-run override **or** freeze protection | Medium RPM switch ON | ON at best-price target temp | ON |
-| `low` | Current hour is in day-ahead LOW tier (next cheapest M hours) | Low RPM switch ON | ON at normal target temp if pool cold | ON |
-| `off` | Hour not in any scheduled tier, daily target met, or **algae skip** | All switches OFF | OFF | OFF |
+| Tier | Condition | Pump |
+|---|---|---|
+| **Cold** | Outdoor between frost threshold and cold buffer (default 2–4°C) | `low` all day except the most expensive hours (default 4), never two skipped hours in a row |
+| **Algae** | Outdoor mild, pool ≥ algae threshold (default 7°C) | `low` during the cheapest *winter algae hours* (default 4) |
+| **Rest** | Outdoor mild, pool < algae threshold | `low` during the cheapest *winter minimum hours* (default 2) — keeps water moving and the pool sensor reading real water |
 
-**Priority order (highest → lowest):**
-1. **Freeze protection** — outdoor temp ≤ freeze threshold (default 2°C) → forces `medium`, bypasses cooldown
-2. **Extra filter active** → forces `high` (only time HIGH is used), bypasses cooldown
-3. **Automation switch off** → holds current mode
-4. **Min-on** — pump started recently → holds current running mode instead of stopping (default 10 min)
-5. **Algae skip** — pool water temp below algae threshold (default 8°C) → `off`, no scheduling
-6. **Must-run override** — schedule gap cannot cover remaining hours → forces `medium`
-7. **Day-ahead schedule** — cheapest N hours → `medium`; next cheapest M hours → `low`; otherwise `off`
-8. **Reactive fallback** (no `today` prices) — best-price → `medium`, normal → `medium`/`low`, peak → `off`
-9. **Cooldown** — pump turned off recently → holds `off` until cooldown elapses (default 10 min)
+If the day's hours have not been met late in the evening, the pump catches up at `low`. Without a price list, cold tier runs except at peak price and the other tiers run during best price.
+
+### Restarts
+
+- Runtime is counted from the time the pump switch is actually on, and saved every 5 minutes. Time while HA was down is not counted.
+- Season, automation switch, extra filter end time, cover burst end time, safety guard state and today's price list are stored and restored.
+- Nothing is commanded until HA has fully started. Temperature sensors get up to 2 minutes to report before the integration decides without them.
+- Every minute the switches are compared with the wanted mode. A pump controller that reboots and comes back off is turned on again as soon as it reappears.
+- With automation off, devices are left exactly as you set them — unless a safety guard is active.
+
+---
+
+## Dashboard cards
+
+The integration ships two Lovelace cards and loads them automatically (no HACS frontend install, no resources to add). After updating, reload the browser once.
+
+```yaml
+type: custom:pool-circulation-card
+```
+Season toggle, current mode and RPM, the reason, freeze-guard banner, pool and outdoor temperature on scales with the critical / algae / frost / cold thresholds, today's progress, and buttons for automation and extra filter.
+
+```yaml
+type: custom:pool-circulation-plan-card
+```
+Today's price per hour as bars, coloured by the planned speed for that hour, with the current hour outlined.
+
+Both find the integration automatically. Add `entity: sensor.pool_circulation_mode` if you have renamed it, and `title:` to change the heading.
 
 ---
 
 ## Prerequisites
 
-- Home Assistant 2023.1 or newer
+- Home Assistant 2024.7 or newer
 - A heat pump integrated as a `climate` entity (e.g. `aqua_temp`)
 - Outdoor temperature sensor (required for freeze protection)
 - Pool water temperature sensor (optional, for algae skip)
@@ -124,8 +143,8 @@ Any Nordpool or Tibber-based price integration with equivalent entities works �
 | Daily circulation hours | ✅ | Target hours per day (0–24, default 8) |
 | Outdoor temperature sensor | — | Used for freeze protection |
 | Pool temperature sensor | — | Used for algae skip |
-| Algae growth threshold | — | Default 8°C — skip circulation below this pool temp |
-| Freeze protection threshold | — | Default 2°C — force low-speed circulation below this outdoor temp |
+| Algae growth threshold | — | Default 7°C — no filtration needed below this pool temp |
+| Freeze protection threshold | — | Default 2°C — continuous low-speed circulation at or below this outdoor temp |
 | Heat pump target (best price) | — | Target temp during best-price hours (default 31°C) |
 | Heat pump target (normal) | — | Target temp during normal hours (default 30°C) |
 | Pool heating threshold | — | Turn on heat pump if pool temp drops below this, even outside best-price hours (default 29°C) |
@@ -149,6 +168,8 @@ Go to **Settings → Devices & Services → Pool Circulation → Configure** to 
 - Actual RPM sensor entity
 - UV lamp switch and pool cover entity
 - Extra filter duration (minutes)
+- Cold buffer temperature, critical pool temperature
+- Winter skip hours, winter algae hours, winter minimum hours
 
 ---
 
@@ -157,12 +178,13 @@ Go to **Settings → Devices & Services → Pool Circulation → Configure** to 
 ### Sensors
 | Entity | Description |
 |---|---|
-| `sensor.pool_circulation_mode` | Current mode: `off` / `low` / `medium` / `high` — attributes include `too_cold`, `freeze_risk`, `in_cooldown`, `cooldown_remaining`, `in_min_on`, `min_on_remaining`, `extra_filter_active`, `uv_on`, temps, price, `schedule_available`, `scheduled_high_hours`, `scheduled_low_hours` |
+| `sensor.pool_circulation_mode` | Current mode: `off` / `low` / `medium` / `high` — attributes include `season`, `rule`, `reason`, `safety`, `winter_tier`, `target_hours`, `done_hours`, `must_run`, `in_cooldown`, `in_min_on`, `extra_filter_active`, temps, price, `scheduled_high_hours`, `scheduled_low_hours`, `unavailable_entities`, and `plan` (today per hour, used by the cards) |
+| `sensor.pool_circulation_reason` | Plain-language reason for the current mode, e.g. "Frost: outdoor -3.0°C ≤ 2.0°C — continuous low-speed circulation" |
 | `sensor.pool_circulation_rpm` | Current RPM (numeric) — reads actual RPM sensor if configured, otherwise derived from active switch; `0` when pump is off |
 | `sensor.pool_heat_pump_mode` | Current HVAC mode of the heat pump: `off` / `cool` / `heat` / `auto` |
 | `sensor.pool_heat_pump_current_temperature` | Temperature reading from the heat pump — attributes include target temp and fan mode |
-| `sensor.pool_circulation_hours_today` | Hours the pump has run today |
-| `sensor.pool_circulation_hours_remaining` | Hours still needed to hit today's target |
+| `sensor.pool_circulation_hours_today` | Hours at medium/high speed today (minute resolution) |
+| `sensor.pool_circulation_hours_remaining` | Hours still needed to hit today's target for the current season |
 | `sensor.pool_electricity_price` | Current electricity price (SEK/kWh) |
 | `sensor.pool_electricity_price_level` | Price level label from your Nordpool integration |
 | `sensor.pool_outdoor_temperature` | Outdoor temperature passthrough (hidden by default) |
@@ -173,7 +195,7 @@ Go to **Settings → Devices & Services → Pool Circulation → Configure** to 
 |---|---|
 | `switch.pool_circulation_automation` | Enable / disable price-based scheduling |
 | `switch.pool_extra_filter` | Activate extra filter mode — forces high RPM for the configured duration, then auto-disables |
-| `switch.pool_winter_mode` | Season toggle — on = winter: the integration sends no commands to the heat pump (switch it off / power it down yourself), circulation logic (schedule, freeze protection, extra filter, cover burst) runs as normal. Off = summer: heat pump follows price tier |
+| `switch.pool_winter_mode` | Season — on = winter rules (heat pump never touched), off = summer rules |
 
 ### Numbers
 | Entity | Description |
@@ -186,6 +208,13 @@ Go to **Settings → Devices & Services → Pool Circulation → Configure** to 
 | `number.pool_heat_pump_target_best_price` | Heat pump target temperature during best-price hours (default 31°C) |
 | `number.pool_heat_pump_target_normal` | Heat pump target temperature during normal hours (default 30°C) |
 | `number.pool_heating_threshold` | Pool temp below which heat pump activates during any running mode (default 29°C) |
+| `number.pool_critical_temperature` | Pool temp at or below which the pump runs continuously at medium (default 4°C) |
+| `number.pool_algae_threshold` | Pool temp below which no filtration is needed (default 7°C) |
+| `number.pool_frost_threshold` | Outdoor temp at or below which the pump runs continuously at low (default 2°C) |
+| `number.pool_outdoor_buffer_temperature` | Cold buffer — upper outdoor temp of the winter cold tier (default 4°C) |
+| `number.pool_winter_skip_hours` | Winter, cold tier: priciest hours that may be skipped (default 4) |
+| `number.pool_winter_algae_hours` | Winter, pool ≥ algae threshold: hours per day (default 4) |
+| `number.pool_winter_minimum_hours` | Winter, cold pool and mild outdoor: hours per day (default 2) |
 
 ---
 
@@ -196,7 +225,10 @@ Fired whenever the circulation mode changes:
 ```yaml
 previous_mode: medium
 mode: high
-hours_run_today: 5
+season: summer
+rule: extra_filter
+reason: Extra filter running at high speed
+hours_run_today: 5.25
 daily_target: 8
 ```
 
@@ -236,3 +268,13 @@ Use these events to trigger push notifications without any logic in YAML:
 ## Credits
 
 Built for a Höllviken pool running an Aqua-Temp heat pump and ESPHome-controlled circulation pump, using the Trulsibrunn Nordpool electricity price integration.
+
+---
+
+## Development
+
+The decision logic lives in `logic.py` and price parsing in `prices.py` — plain Python with no Home Assistant imports. Tests (no HA install needed):
+
+```bash
+python3 -m unittest discover -s tests
+```

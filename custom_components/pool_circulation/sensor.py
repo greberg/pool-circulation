@@ -27,6 +27,7 @@ async def async_setup_entry(
     async_add_entities(
         [
             PoolCirculationModeSensor(coordinator, entry),
+            PoolCirculationReasonSensor(coordinator, entry),
             PoolCirculationRpmSensor(coordinator, entry),
             PoolCirculationScheduleSensor(coordinator, entry),
             PoolCirculationHoursTodaySensor(coordinator, entry),
@@ -56,7 +57,13 @@ class _SensorBase(CoordinatorEntity, SensorEntity):
 
 
 class PoolCirculationModeSensor(_SensorBase):
-    """Current circulation mode: off / low / medium / high."""
+    """Current circulation mode: off / low / medium / high.
+
+    Also carries everything the Lovelace cards need (season, rule, plan,
+    thresholds, entity IDs). The bulky ones are kept out of the recorder.
+    """
+
+    _unrecorded_attributes = frozenset({"plan", "entities", "thresholds"})
 
     def __init__(self, coordinator, entry):
         super().__init__(coordinator, entry, "mode", "Pool Circulation Mode")
@@ -70,20 +77,29 @@ class PoolCirculationModeSensor(_SensorBase):
     def extra_state_attributes(self):
         d = self._data
         return {
+            "season": d.get("season"),
+            "rule": d.get("rule"),
+            "reason": d.get("reason"),
+            "safety": d.get("safety"),
+            "winter_tier": d.get("winter_tier"),
+            "automation_enabled": d.get("automation_enabled"),
+            "pump_running": d.get("pump_running"),
+            "active_rpm": d.get("active_rpm"),
+            "target_hours": d.get("target_hours"),
+            "done_hours": d.get("done_hours"),
+            "hours_run_today": d.get("hours_run_today"),
+            "hours_low_today": d.get("hours_low_today"),
             "is_best_price": d.get("is_best_price"),
             "is_peak_price": d.get("is_peak_price"),
             "must_run": d.get("must_run"),
-            "must_run_peak_suppressed": d.get("must_run_peak_suppressed"),
             "too_cold": d.get("too_cold"),
-            "outdoor_buffer_active": d.get("outdoor_buffer_active"),
-            "scheduling_active": d.get("scheduling_active"),
             "freeze_risk": d.get("freeze_risk"),
             "in_cooldown": d.get("in_cooldown"),
             "cooldown_remaining": d.get("cooldown_remaining"),
             "in_min_on": d.get("in_min_on"),
             "min_on_remaining": d.get("min_on_remaining"),
-            "season": d.get("season"),
             "extra_filter_active": d.get("extra_filter_active"),
+            "extra_filter_remaining": d.get("extra_filter_remaining"),
             "cover_circulation_active": d.get("cover_circulation_active"),
             "uv_on": d.get("uv_on"),
             "outdoor_temp": d.get("outdoor_temp"),
@@ -93,7 +109,28 @@ class PoolCirculationModeSensor(_SensorBase):
             "schedule_available": d.get("schedule_available"),
             "scheduled_high_hours": d.get("scheduled_high_hours"),
             "scheduled_low_hours": d.get("scheduled_low_hours"),
+            "unavailable_entities": d.get("unavailable_entities"),
+            "thresholds": d.get("thresholds"),
+            "plan": d.get("plan"),
+            "entities": d.get("entities"),
         }
+
+
+class PoolCirculationReasonSensor(_SensorBase):
+    """Plain-language explanation of why the pump is in its current mode."""
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry, "reason", "Pool Circulation Reason")
+        self._attr_icon = "mdi:information-outline"
+
+    @property
+    def native_value(self):
+        return (self._data.get("reason") or "")[:255]
+
+    @property
+    def extra_state_attributes(self):
+        d = self._data
+        return {"rule": d.get("rule"), "season": d.get("season"), "safety": d.get("safety")}
 
 
 class PoolCirculationScheduleSensor(_SensorBase):
