@@ -1,7 +1,7 @@
 """Constants for Pool Circulation integration."""
 
 DOMAIN = "pool_circulation"
-VERSION = "1.8.0"
+VERSION = "1.9.0"
 
 # ---------------------------------------------------------------------------
 # Configuration keys — entities
@@ -57,6 +57,8 @@ CONF_MIN_ON_MINUTES = "min_on_minutes"
 CONF_HP_TEMP_BEST_PRICE = "hp_temp_best_price"
 CONF_HP_TEMP_NORMAL = "hp_temp_normal"
 CONF_FEEDBACK_THRESHOLD = "feedback_threshold"   # feedback above this = pump running
+CONF_FEEDBACK_MEDIUM_FROM = "feedback_medium_from"  # feedback at/above this = medium speed
+CONF_FEEDBACK_HIGH_FROM = "feedback_high_from"      # feedback at/above this = high speed
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -77,11 +79,22 @@ DEFAULT_MIN_ON_MINUTES = 10          # minimum minutes pump stays on once starte
 DEFAULT_HP_TEMP_BEST_PRICE = 31.0    # °C — heat pump target during cheap hours
 DEFAULT_HP_TEMP_NORMAL = 30.0        # °C — heat pump target otherwise
 DEFAULT_FEEDBACK_THRESHOLD = 10.0    # W or rpm
+DEFAULT_FEEDBACK_SPEED_FROM = 0.0    # 0 = pick by the feedback sensor's unit
+
+# Speed bands used when the medium/high limits are left at 0, by the feedback
+# sensor's unit: (medium from, high from)
+AUTO_SPEED_BANDS = {
+    "w": (300.0, 500.0),
+    "rpm": (2000.0, 2650.0),
+}
 
 # Feedback must disagree with the switches this long before it counts as a fault
 # (the inverter ramps up / down), and a stuck pump is re-commanded this often.
 FEEDBACK_GRACE_SECONDS = 180
 FAULT_RETRY_MINUTES = 10
+# Speed controllers often start at full speed and settle on the selected speed
+# after a few minutes. A different measured speed only counts as wrong after this.
+SPEED_SETTLE_SECONDS = 360
 
 # Summer: the priciest N hours of the day count as peak (no catch-up at medium)
 PEAK_HOURS = 4

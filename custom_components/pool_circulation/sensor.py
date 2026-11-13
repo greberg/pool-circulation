@@ -78,6 +78,8 @@ class PoolCirculationModeSensor(_SensorBase):
                 "pool_temp", "outdoor_temp", "price", "is_peak_price",
                 "target_hours", "done_hours", "must_run",
                 "in_cooldown", "in_min_on", "unavailable_entities",
+                "actual_speed", "speed_settling", "feedback_value", "feedback_unit",
+                "pump_fault",
                 "thresholds", "plan", "entities",
             )
         }

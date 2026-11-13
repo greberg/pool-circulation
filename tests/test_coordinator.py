@@ -429,6 +429,65 @@ class FeedbackTests(unittest.TestCase):
             self.assertAlmostEqual(c._minutes_low, 5, delta=0.01)
         self.run_async(go())
 
+    def test_startup_ramp_is_not_a_fault_but_a_wrong_speed_is(self):
+        async def go():
+            hass = make_hass()
+            # Controller starts at full speed although LOW is selected
+            hass.states.set("sensor.power", "620", {"unit_of_measurement": "W"})
+            with mock.patch("asyncio.sleep", new=mock.AsyncMock()):
+                c = await start(hass, store_winter=True, extra=self.FB)
+                self.assertEqual(c.current_mode, "low")
+                self.assertEqual(c.data["actual_speed"], "high")
+                self.assertTrue(c.data["speed_settling"])
+                await self.tick(hass, 8)              # 6 min settle + < 3 min grace
+                self.assertIsNone(c.pump_fault)
+                self.assertFalse(c.data["speed_settling"])
+                await self.tick(hass, 2)
+                self.assertEqual(c.pump_fault, "wrong_speed")
+                hass.set_state("sensor.power", "180")
+                self.assertEqual(c.data["actual_speed"], "low")   # refreshed without a tick
+                await self.tick(hass, 1)
+            self.assertIsNone(c.pump_fault)
+        self.run_async(go())
+
+    def test_speed_settles_within_ramp_time(self):
+        async def go():
+            hass = make_hass()
+            hass.states.set("sensor.power", "620", {"unit_of_measurement": "W"})
+            c = await start(hass, store_winter=True, extra=self.FB)
+            await self.tick(hass, 4)
+            hass.set_state("sensor.power", "190")
+            await self.tick(hass, 10)
+            self.assertIsNone(c.pump_fault)
+            self.assertEqual(c.data["actual_speed"], "low")
+        self.run_async(go())
+
+    def test_rpm_feedback_and_custom_bands(self):
+        async def go():
+            hass = make_hass()
+            hass.states.set("sensor.power", "2900", {"unit_of_measurement": "rpm"})
+            c = await start(hass, store_winter=True, extra=self.FB)
+            self.assertEqual(c._actual_speed(), "high")
+            hass.set_state("sensor.power", "2400")
+            self.assertEqual(c._actual_speed(), "medium")
+            hass.set_state("sensor.power", "1600")
+            self.assertEqual(c._actual_speed(), "low")
+            hass.set_state("sensor.power", "0")
+            self.assertEqual(c._actual_speed(), "off")
+
+            hass2 = make_hass()
+            hass2.states.set("sensor.power", "250", {"unit_of_measurement": "kW?"})
+            c2 = await start(hass2, store_winter=True, extra={
+                **self.FB, "feedback_medium_from": 200, "feedback_high_from": 400})
+            self.assertEqual(c2._actual_speed(), "medium")
+
+            hass3 = make_hass()
+            hass3.states.set("sensor.power", "250", {"unit_of_measurement": "A"})
+            c3 = await start(hass3, store_winter=True, extra=self.FB)
+            self.assertIsNone(c3._actual_speed())      # unknown unit, no bands
+            self.assertTrue(c3._pump_running())
+        self.run_async(go())
+
     def test_speed_selected_before_controller_enabled(self):
         async def go():
             hass = make_hass()

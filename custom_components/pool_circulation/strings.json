@@ -54,12 +54,16 @@
               "min_on_minutes": "Minimum on-time",
               "hp_temp_best_price": "Heat pump target, cheap hours",
               "hp_temp_normal": "Heat pump target, other hours",
-              "feedback_threshold": "Pump feedback: running above"
+              "feedback_threshold": "Pump feedback: running above",
+              "feedback_medium_from": "Pump feedback: medium speed from",
+              "feedback_high_from": "Pump feedback: high speed from"
             },
             "data_description": {
               "pool_critical_temp": "At or below this the pump runs continuously at medium, in any season.",
               "temp_outdoor_buffer": "Winter: between the frost threshold and this, run low speed most hours.",
-              "feedback_threshold": "Feedback values above this count as running (W or rpm, default 10)."
+              "feedback_threshold": "Feedback values above this count as running (W or rpm, default 10).",
+              "feedback_medium_from": "Feedback at or above this counts as medium speed. 0 = automatic: 300 W or 2000 rpm.",
+              "feedback_high_from": "Feedback at or above this counts as high speed. 0 = automatic: 500 W or 2650 rpm."
             }
           }
         }
@@ -126,12 +130,16 @@
               "min_on_minutes": "Minimum on-time",
               "hp_temp_best_price": "Heat pump target, cheap hours",
               "hp_temp_normal": "Heat pump target, other hours",
-              "feedback_threshold": "Pump feedback: running above"
+              "feedback_threshold": "Pump feedback: running above",
+              "feedback_medium_from": "Pump feedback: medium speed from",
+              "feedback_high_from": "Pump feedback: high speed from"
             },
             "data_description": {
               "pool_critical_temp": "At or below this the pump runs continuously at medium, in any season.",
               "temp_outdoor_buffer": "Winter: between the frost threshold and this, run low speed most hours.",
-              "feedback_threshold": "Feedback values above this count as running (W or rpm, default 10)."
+              "feedback_threshold": "Feedback values above this count as running (W or rpm, default 10).",
+              "feedback_medium_from": "Feedback at or above this counts as medium speed. 0 = automatic: 300 W or 2000 rpm.",
+              "feedback_high_from": "Feedback at or above this counts as high speed. 0 = automatic: 500 W or 2650 rpm."
             }
           }
         }

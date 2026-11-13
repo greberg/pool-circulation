@@ -9,7 +9,7 @@
  * automatically when omitted — and an optional `title:`.
  */
 
-const CARD_VERSION = "1.8.0";
+const CARD_VERSION = "1.9.0";
 
 const MODE = {
   off: { label: "Off", color: "var(--pc-off)" },
@@ -22,6 +22,12 @@ const SAFETY = {
   pool_critical: { icon: "mdi:snowflake-alert", title: "Pool near freezing" },
   frost: { icon: "mdi:snowflake-thermometer", title: "Frost guard" },
   sensor_failsafe: { icon: "mdi:thermometer-off", title: "Outdoor sensor missing" },
+};
+
+const FAULT = {
+  not_running: { title: "Pump not responding", text: "Switches are on but the feedback sensor shows no running pump" },
+  not_stopping: { title: "Pump won't stop", text: "Feedback shows the pump running although it is switched off" },
+  wrong_speed: { title: "Pump at wrong speed" },
 };
 
 const TIER = {
@@ -162,11 +168,15 @@ class PoolCirculationCard extends PoolCardBase {
 
   _render(st, linked) {
     const a = st.attributes;
-    const mode = MODE[st.state] || MODE.off;
+    const selected = MODE[st.state] || MODE.off;
+    // Show what the pump really does when the feedback sensor can tell
+    const actualKey = a.actual_speed && MODE[a.actual_speed] ? a.actual_speed : null;
+    const shownKey = actualKey || st.state;
+    const mode = MODE[shownKey] || MODE.off;
     const winter = a.season === "winter";
     const t = a.thresholds || {};
     const safety = a.safety && SAFETY[a.safety];
-    const running = st.state !== "off";
+    const running = (actualKey || st.state) !== "off";
     const automation = this._state(linked.automation);
     const extra = this._state(linked.extra_filter);
     const extraOn = extra && extra.state === "on";
@@ -175,7 +185,18 @@ class PoolCirculationCard extends PoolCardBase {
     const pct = target ? Math.min(100, (done / target) * 100) : 100;
     const feedback = a.feedback_value === null || a.feedback_value === undefined ? ""
       : ` · ${Math.round(a.feedback_value)}${a.feedback_unit ? ` ${a.feedback_unit}` : ""}`;
-    const pumpState = (a.pump_running ? "Pump running" : running ? "Starting…" : "Pump stopped") + feedback;
+    let pumpState;
+    if (actualKey && actualKey !== st.state) {
+      const startUp = a.speed_settling && actualKey !== "off" && st.state !== "off";
+      pumpState = startUp ? `Start-up · settling to ${selected.label}`
+        : st.state === "off" ? "Should be off"
+        : actualKey === "off" ? `Starting ${selected.label}…`
+        : `Selected ${selected.label}`;
+    } else {
+      pumpState = a.pump_running ? "Pump running"
+        : running ? "Starting…" : "Pump stopped";
+    }
+    pumpState += feedback;
     const extraLeft = Math.ceil((a.extra_filter_remaining || 0) / 60);
 
     const poolMax = Math.max(winter ? 16 : 32, (a.pool_temp ?? 0) + 2);
@@ -203,10 +224,10 @@ class PoolCirculationCard extends PoolCardBase {
     }
 
     const fault = a.pump_fault ? `<div class="banner danger"><ha-icon icon="mdi:pump-off"></ha-icon>
-        <div><b>${a.pump_fault === "not_stopping" ? "Pump won't stop" : "Pump not responding"}</b>
-        <div class="muted">${a.pump_fault === "not_stopping"
-          ? "Feedback shows the pump running although it is switched off"
-          : "Switches are on but the feedback sensor shows no running pump"} — outputs are re-sent every 10 min</div></div></div>` : "";
+        <div><b>${FAULT[a.pump_fault]?.title || "Pump fault"}</b>
+        <div class="muted">${a.pump_fault === "wrong_speed"
+          ? `Running ${mode.label} although ${selected.label} is selected`
+          : FAULT[a.pump_fault]?.text || ""} — outputs are re-sent every 10 min</div></div></div>` : "";
 
     const unavailable = (a.unavailable_entities || []).length
       ? `<div class="banner warn"><ha-icon icon="mdi:lan-disconnect"></ha-icon>
@@ -229,7 +250,7 @@ class PoolCirculationCard extends PoolCardBase {
         background: color-mix(in srgb, ${mode.color} 18%, transparent); color: ${mode.color}; flex: none;
       }
       .pump ha-icon { --mdc-icon-size: 30px; }
-      .pump.spin ha-icon { animation: spin ${st.state === "high" ? 0.8 : st.state === "medium" ? 1.4 : 2.4}s linear infinite; }
+      .pump.spin ha-icon { animation: spin ${shownKey === "high" ? 0.8 : shownKey === "medium" ? 1.4 : 2.4}s linear infinite; }
       @keyframes spin { to { transform: rotate(360deg); } }
       @media (prefers-reduced-motion: reduce) { .pump.spin ha-icon { animation: none; } }
       .mode { font-size: 1.6rem; font-weight: 500; line-height: 1.1; color: var(--primary-text-color); }

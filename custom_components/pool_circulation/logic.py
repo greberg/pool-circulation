@@ -204,6 +204,24 @@ def plan_today(inp: Inputs, s: Settings, safety: str | None, tier: str | None) -
     return [MODE_LOW if h in run else MODE_OFF for h in range(24)]
 
 
+def classify_speed(
+    value: float | None, running_above: float, medium_from: float, high_from: float
+) -> str | None:
+    """Measured pump speed from a feedback reading (power or rpm).
+
+    None when there is no reading. OFF at or below *running_above*.
+    """
+    if value is None:
+        return None
+    if value <= running_above:
+        return MODE_OFF
+    if value >= high_from:
+        return MODE_HIGH
+    if value >= medium_from:
+        return MODE_MEDIUM
+    return MODE_LOW
+
+
 def _fmt(t: float | None) -> str:
     return "?" if t is None else f"{t:.1f}°C"
 

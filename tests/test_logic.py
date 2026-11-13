@@ -183,3 +183,13 @@ class PriceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SpeedTests(unittest.TestCase):
+    def test_classify_speed(self):
+        c = logic.classify_speed
+        self.assertIsNone(c(None, 10, 300, 500))
+        self.assertEqual(c(5, 10, 300, 500), "off")
+        self.assertEqual(c(180, 10, 300, 500), "low")
+        self.assertEqual(c(300, 10, 300, 500), "medium")
+        self.assertEqual(c(620, 10, 300, 500), "high")

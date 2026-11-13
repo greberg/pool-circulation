@@ -110,6 +110,8 @@ When running, the speed is selected first and the controller enabled after; when
 - **Runtime** is counted from the feedback, not from the switches.
 - **Pump fault**: if the pump has not followed the switches after 3 minutes, `binary_sensor.pool_pump_fault` turns on, a `pool_circulation_pump_fault` event fires, and the outputs are re-sent (enable pulsed off → on) every 10 minutes until the pump responds.
 - Values above *Pump feedback: running above* (default 10) count as running, so a power sensor (W) and an rpm sensor both work.
+- **Actual speed**: the feedback is also mapped to low / medium / high, and the card shows that speed instead of the selected one. Automatic limits: from 300 W medium and from 500 W high, or from 2000 rpm medium and from 2650 rpm high. Other units, or other pumps, set *medium speed from* / *high speed from* under Advanced.
+- **Start-up ramp**: many speed controllers start at full speed and settle on the selected speed after a few minutes. For 6 minutes after a speed change a different measured speed shows as "Start-up · settling to Low" on the card, not as a fault. If it still differs after that (plus the 3-minute grace), the fault is `wrong_speed`.
 
 Use the power sensor of the plug directly if you can. A template that turns "plug unavailable" into `0` makes a lost plug look like a stopped pump and raises a false fault; when the feedback is `unavailable` the integration falls back to the switches instead.
 
@@ -142,7 +144,7 @@ One form, used both for setup and later under **Settings → Devices & Services 
 
 **Optional devices** (collapsed): pump on/off switch, pump feedback sensor, heat pump, UV lamp, pool cover. Leave empty if you don't have them. An "actual RPM sensor" from an older version is moved here automatically.
 
-**Advanced** (collapsed): critical pool temperature (4°C), cold outdoor limit (4°C), winter skip / algae / minimum hours (4 / 4 / 2), extra filter duration (60 min), cooldown and minimum on-time (10 / 10 min), heat pump targets (31 / 30°C), pump feedback running threshold (10).
+**Advanced** (collapsed): critical pool temperature (4°C), cold outdoor limit (4°C), winter skip / algae / minimum hours (4 / 4 / 2), extra filter duration (60 min), cooldown and minimum on-time (10 / 10 min), heat pump targets (31 / 30°C), pump feedback running threshold (10), pump feedback medium / high speed limits (0 = automatic by unit).
 
 Changing an entity reloads the integration. Changing a setting takes effect right away without touching today's runtime.
 
@@ -153,7 +155,7 @@ Changing an entity reloads the integration. Changing a setting takes effect righ
 ### Sensors
 | Entity | Description |
 |---|---|
-| `sensor.pool_circulation_mode` | `off` / `low` / `medium` / `high` — attributes include `season`, `rule`, `reason`, `safety`, `winter_tier`, temperatures, price, `is_peak_price`, `target_hours`, `done_hours`, `unavailable_entities` and `plan` (today per hour, used by the cards) |
+| `sensor.pool_circulation_mode` | `off` / `low` / `medium` / `high` — attributes include `season`, `rule`, `reason`, `safety`, `winter_tier`, temperatures, price, `is_peak_price`, `target_hours`, `done_hours`, `actual_speed` (measured by the feedback sensor), `speed_settling`, `feedback_value`, `unavailable_entities` and `plan` (today per hour, used by the cards) |
 | `sensor.pool_circulation_reason` | Why the pump is in its current mode, in plain words |
 | `sensor.pool_circulation_hours_today` | Hours the pump has run today, all speeds |
 | `sensor.pool_circulation_hours_remaining` | Hours still needed today for the current season |
@@ -161,7 +163,7 @@ Changing an entity reloads the integration. Changing a setting takes effect righ
 ### Binary sensor
 | Entity | Description |
 |---|---|
-| `binary_sensor.pool_pump_fault` | On when the pump does not follow the switches (`fault`: `not_running` / `not_stopping`). Needs a feedback sensor |
+| `binary_sensor.pool_pump_fault` | On when the pump does not follow the switches (`fault`: `not_running` / `not_stopping` / `wrong_speed`). Needs a feedback sensor |
 
 ### Switches
 | Entity | Description |

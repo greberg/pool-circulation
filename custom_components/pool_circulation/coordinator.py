@@ -41,6 +41,8 @@ from .const import (
     CONF_COVER_POOL,
     CONF_DAILY_HOURS,
     CONF_EXTRA_FILTER_DURATION,
+    CONF_FEEDBACK_HIGH_FROM,
+    CONF_FEEDBACK_MEDIUM_FROM,
     CONF_FEEDBACK_THRESHOLD,
     CONF_HP_TEMP_BEST_PRICE,
     CONF_HP_TEMP_NORMAL,
@@ -65,6 +67,7 @@ from .const import (
     DEFAULT_COOLDOWN_MINUTES,
     DEFAULT_DAILY_HOURS,
     DEFAULT_EXTRA_FILTER_DURATION,
+    AUTO_SPEED_BANDS,
     DEFAULT_FEEDBACK_THRESHOLD,
     DEFAULT_HP_TEMP_BEST_PRICE,
     DEFAULT_HP_TEMP_NORMAL,
@@ -84,6 +87,7 @@ from .const import (
     EVENT_UV_CHANGED,
     FAULT_RETRY_MINUTES,
     FEEDBACK_GRACE_SECONDS,
+    SPEED_SETTLE_SECONDS,
     MAX_ACCOUNTING_GAP_SECONDS,
     MODE_HIGH,
     MODE_LOW,
@@ -95,7 +99,7 @@ from .const import (
     STORE_KEY,
     STORE_VERSION,
 )
-from .logic import INF, Decision, Inputs, Settings, decide, is_peak_hour
+from .logic import INF, Decision, Inputs, Settings, classify_speed, decide, is_peak_hour
 from .prices import describe_attrs, extract_today_prices
 
 _LOGGER = logging.getLogger(__name__)
@@ -169,7 +173,11 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         self._entity_ids: dict[str, str | None] = {}
 
         # Pump feedback — does the pump actually do what the switches say?
-        self.pump_fault: str | None = None          # "not_running" / "not_stopping"
+        self.pump_fault: str | None = None          # "not_running" / "not_stopping" / "wrong_speed"
+        # When the speed was last changed — the controller needs a few minutes
+        # to settle. Starts "now" so a restart doesn't flag a ramping pump.
+        self._speed_since: datetime = dt_util.now()
+        self._last_actual: str | None = None
         self._fault_since: datetime | None = None
         self._mismatch_since: datetime | None = None
         self._last_retry: datetime | None = None
@@ -405,6 +413,9 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         if devices:
             self._unsubs.append(async_track_state_change_event(self.hass, devices, self._on_device_changed))
 
+        if feedback := cfg.get(CONF_SENSOR_PUMP_FEEDBACK):
+            self._unsubs.append(async_track_state_change_event(self.hass, [feedback], self._on_feedback_changed))
+
     @callback
     def _on_temp_changed(self, event) -> None:
         """Re-decide as soon as a temperature reading changes.
@@ -432,6 +443,14 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         if old_state is None or old_state.state in _UNAVAILABLE:
             _LOGGER.info("%s is back (%s) — reconciling", new_state.entity_id, new_state.state)
             self.hass.async_create_task(self.async_evaluate_mode())
+
+    @callback
+    def _on_feedback_changed(self, event) -> None:
+        """Refresh the cards when the measured speed changes (not on every watt)."""
+        actual = self._actual_speed()
+        if actual != self._last_actual:
+            self._last_actual = actual
+            self.async_set_updated_data(self._build_data())
 
     @callback
     def _on_cover_changed(self, event) -> None:
@@ -566,6 +585,7 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         _LOGGER.info("Mode %s → %s (%s: %s)", previous, mode, d.rule, d.reason)
         self.current_mode = mode
         now = dt_util.now()
+        self._speed_since = now
         if mode == MODE_OFF and previous != MODE_OFF:
             self._last_turned_off = now
         elif mode != MODE_OFF and previous == MODE_OFF:
@@ -657,7 +677,15 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             return
 
         expected = self.current_mode != MODE_OFF
-        if running == expected:
+        fault: str | None = None
+        if running != expected:
+            fault = "not_running" if expected else "not_stopping"
+        elif running and not self._speed_settling(now):
+            actual = self._actual_speed()
+            if actual not in (None, MODE_OFF, self.current_mode):
+                fault = "wrong_speed"
+
+        if fault is None:
             self._mismatch_since = None
             if self.pump_fault:
                 self._set_fault(None, now)
@@ -667,8 +695,8 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         self._mismatch_since = self._mismatch_since or now
         if (now - self._mismatch_since).total_seconds() < FEEDBACK_GRACE_SECONDS:
             return
-        if not self.pump_fault:
-            self._set_fault("not_running" if expected else "not_stopping", now)
+        if self.pump_fault != fault:
+            self._set_fault(fault, now)
         if self._last_retry is None or now - self._last_retry >= timedelta(minutes=FAULT_RETRY_MINUTES):
             self._last_retry = now
             await self._resend_outputs()
@@ -689,6 +717,7 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         self.hass.bus.async_fire(
             EVENT_PUMP_FAULT,
             {"fault": fault, "active": fault is not None, "mode": self.current_mode,
+             "actual_speed": self._actual_speed(),
              "feedback": self._state_float(CONF_SENSOR_PUMP_FEEDBACK)},
         )
 
@@ -726,6 +755,33 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             entity_id.split(".", 1)[0], "turn_on" if on else "turn_off",
             {"entity_id": entity_id}, blocking=True,
         )
+
+    def _speed_bands(self) -> tuple[float, float] | None:
+        """(medium from, high from) — from the settings, else by the sensor's unit."""
+        cfg = self.cfg
+        medium = float(cfg.get(CONF_FEEDBACK_MEDIUM_FROM) or 0)
+        high = float(cfg.get(CONF_FEEDBACK_HIGH_FROM) or 0)
+        if 0 < medium < high:
+            return medium, high
+        return AUTO_SPEED_BANDS.get((self._feedback_unit() or "").strip().lower())
+
+    def _actual_speed(self) -> str | None:
+        """Speed the pump really runs at, measured by the feedback sensor.
+
+        None without a feedback reading, or when the reading can't be mapped
+        to a speed (unknown unit and no limits set) while the pump runs.
+        """
+        value = self._state_float(CONF_SENSOR_PUMP_FEEDBACK)
+        if value is None:
+            return None
+        threshold = float(self.cfg.get(CONF_FEEDBACK_THRESHOLD, DEFAULT_FEEDBACK_THRESHOLD))
+        bands = self._speed_bands()
+        if bands is None:
+            return MODE_OFF if value <= threshold else None
+        return classify_speed(value, threshold, *bands)
+
+    def _speed_settling(self, now: datetime) -> bool:
+        return (now - self._speed_since).total_seconds() < SPEED_SETTLE_SECONDS
 
     def _feedback_running(self) -> bool | None:
         """True/False from the feedback sensor, None when there is none or it has no reading."""
@@ -950,6 +1006,8 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             "pump_fault_since": self._fault_since.isoformat() if self._fault_since else None,
             "feedback_value": self._state_float(CONF_SENSOR_PUMP_FEEDBACK),
             "feedback_unit": self._feedback_unit(),
+            "actual_speed": self._actual_speed(),
+            "speed_settling": self.current_mode != MODE_OFF and self._speed_settling(now),
             "uv_on": self._state_is_on(CONF_SWITCH_UV_LAMP),
             "schedule_available": bool(d and d.plan),
             "plan": plan,

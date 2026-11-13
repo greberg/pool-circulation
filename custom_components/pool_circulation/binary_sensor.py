@@ -26,7 +26,9 @@ class PoolPumpFaultBinarySensor(CoordinatorEntity, BinarySensorEntity):
 
     Needs a pump feedback sensor (power or rpm). ``not_running``: the pump
     should run but the feedback reads nothing. ``not_stopping``: it should be
-    off but still draws power. Without a feedback sensor this stays off.
+    off but still draws power. ``wrong_speed``: it runs, but at another speed
+    than selected after the start-up ramp. Without a feedback sensor this
+    stays off.
     """
 
     _attr_device_class = BinarySensorDeviceClass.PROBLEM
@@ -53,6 +55,7 @@ class PoolPumpFaultBinarySensor(CoordinatorEntity, BinarySensorEntity):
             "fault": d.get("pump_fault"),
             "since": d.get("pump_fault_since"),
             "mode": d.get("mode"),
+            "actual_speed": d.get("actual_speed"),
             "feedback": d.get("feedback_value"),
             "feedback_unit": d.get("feedback_unit"),
         }
