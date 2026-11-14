@@ -81,7 +81,7 @@ The integration ships two Lovelace cards and loads them automatically (no HACS f
 ```yaml
 type: custom:pool-circulation-card
 ```
-Season toggle, current mode, the reason, freeze-guard banner, pool and outdoor temperature on scales with the critical / algae / frost / cold thresholds, today's progress, and buttons for automation and extra filter.
+Season toggle, measured speed, the reason, freeze-guard and pump-fault banners, pool and outdoor temperature on scales with the critical / algae / medium / frost thresholds, today's progress, the current price, the pump's kWh and cost today (with a power feedback sensor), and buttons for automation and extra filter.
 
 ```yaml
 type: custom:pool-circulation-plan-card
@@ -110,6 +110,7 @@ The integration only assumes on/off switches. A typical setup is a dumb pump beh
 When running, the speed is selected first and the controller enabled after; when stopping, the controller is disabled first. These switches only show what the ESP outputs — not what the pump does. Add a **pump feedback sensor** to know that:
 
 - **Runtime** is counted from the feedback, not from the switches.
+- **Energy and cost today**: with a power sensor (W or kW) the pump's kWh today and its cost (kWh × the price at the time) are counted every minute, saved across restarts and shown on the card. Reset at midnight.
 - **Pump fault**: if the pump has not followed the switches after 3 minutes, `binary_sensor.pool_pump_fault` turns on, a `pool_circulation_pump_fault` event fires, and the outputs are re-sent (enable pulsed off → on) every 10 minutes until the pump responds.
 - Values above *Pump feedback: running above* (default 10) count as running, so a power sensor (W) and an rpm sensor both work.
 - **Actual speed**: the feedback is also mapped to low / medium / high, and the card shows that speed instead of the selected one. Automatic limits: from 300 W medium and from 500 W high, or from 2000 rpm medium and from 2650 rpm high. Other units, or other pumps, set *medium speed from* / *high speed from* under Advanced.
@@ -157,7 +158,7 @@ Changing an entity reloads the integration. Changing a setting takes effect righ
 ### Sensors
 | Entity | Description |
 |---|---|
-| `sensor.pool_circulation_mode` | `off` / `low` / `medium` / `high` — attributes include `season`, `rule`, `reason`, `safety`, `winter_tier`, temperatures, price, `is_peak_price`, `target_hours`, `done_hours`, `actual_speed` (measured by the feedback sensor), `speed_settling`, `feedback_value`, `unavailable_entities` and `plan` (today per hour, used by the cards) |
+| `sensor.pool_circulation_mode` | `off` / `low` / `medium` / `high` — attributes include `season`, `rule`, `reason`, `safety`, `winter_tier`, temperatures, price, `is_peak_price`, `target_hours`, `done_hours`, `price_unit`, `energy_today` (kWh), `cost_today`, `actual_speed` (measured by the feedback sensor), `speed_settling`, `feedback_value`, `unavailable_entities` and `plan` (today per hour, used by the cards) |
 | `sensor.pool_circulation_reason` | Why the pump is in its current mode, in plain words |
 | `sensor.pool_circulation_hours_today` | Hours the pump has run today, all speeds |
 | `sensor.pool_circulation_hours_remaining` | Hours still needed today for the current season |

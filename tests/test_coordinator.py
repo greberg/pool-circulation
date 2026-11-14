@@ -506,6 +506,30 @@ class FeedbackTests(unittest.TestCase):
             self.assertTrue(c3._pump_running())
         self.run_async(go())
 
+    def test_energy_and_cost_today_from_power_feedback(self):
+        async def go():
+            hass = make_hass()                       # price sensor reads 0.6
+            hass.states.set("sensor.power", "180", {"unit_of_measurement": "W"})
+            c = await start(hass, store_winter=True, extra=self.FB)
+            await self.tick(hass, 60)                # 180 W for one hour
+            self.assertAlmostEqual(c.data["energy_today"], 0.18, places=3)
+            self.assertAlmostEqual(c.data["cost_today"], 0.11, places=2)   # 0.18 kWh × 0.6
+            await c._save_state()
+            await c.async_unload()
+
+            hass2 = make_hass()
+            hass2.states.set("sensor.power", "180", {"unit_of_measurement": "W"})
+            c2 = await start(hass2, extra=self.FB)
+            self.assertAlmostEqual(c2.data["energy_today"], 0.18, places=3)
+
+            no_power = make_hass()
+            no_power.states.set("sensor.power", "1600", {"unit_of_measurement": "rpm"})
+            c3 = await start(no_power, store_winter=True, extra=self.FB)
+            await self.tick(no_power, 5)
+            self.assertIsNone(c3.data["energy_today"])
+            self.assertEqual(c3.data["price"], 0.6)
+        self.run_async(go())
+
     def test_speed_selected_before_controller_enabled(self):
         async def go():
             hass = make_hass()

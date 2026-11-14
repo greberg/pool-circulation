@@ -9,7 +9,7 @@
  * automatically when omitted — and an optional `title:`.
  */
 
-const CARD_VERSION = "1.10.0";
+const CARD_VERSION = "1.11.0";
 
 const MODE = {
   off: { label: "Off", color: "var(--pc-off)" },
@@ -75,6 +75,13 @@ function fmtHours(v) {
   if (v === null || v === undefined) return "–";
   const n = Number(v);
   return Number.isInteger(n) ? `${n}` : n.toFixed(1);
+}
+
+// 2 decimals for small values (prices, kWh), fewer for large ones (öre, big costs)
+function fmtNum(v) {
+  const n = Number(v);
+  if (v === null || v === undefined || Number.isNaN(n)) return "–";
+  return n.toFixed(Math.abs(n) >= 100 ? 0 : Math.abs(n) >= 10 ? 1 : 2);
 }
 
 function findModeEntity(hass) {
@@ -223,6 +230,17 @@ class PoolCirculationCard extends PoolCardBase {
         <span class="muted">${fmtHours(done)} / ${fmtHours(target)} h${a.must_run ? " · catching up" : ""}</span>`;
     }
 
+    // Price now, and the pump's energy and cost today (needs a power feedback sensor)
+    const priceUnit = a.price_unit || "";
+    const costUnit = priceUnit.split("/")[0].trim();
+    const has = (v) => v !== null && v !== undefined;
+    const priceRow = has(a.price) ? `<div class="today"><span class="muted">Price</span>
+        <span class="val">${fmtNum(a.price)} <span class="muted">${esc(priceUnit)}</span></span>
+        <span class="muted">${a.is_peak_price ? "peak hour" : ""}</span></div>` : "";
+    const energyRow = has(a.energy_today) ? `<div class="today"><span class="muted">Energy today</span>
+        <span class="val">${fmtNum(a.energy_today)} <span class="muted">kWh</span></span>
+        <span class="muted">${has(a.cost_today) ? `${fmtNum(a.cost_today)} ${esc(costUnit)}` : ""}</span></div>` : "";
+
     const fault = a.pump_fault ? `<div class="banner danger"><ha-icon icon="mdi:pump-off"></ha-icon>
         <div><b>${FAULT[a.pump_fault]?.title || "Pump fault"}</b>
         <div class="muted">${a.pump_fault === "wrong_speed"
@@ -272,6 +290,7 @@ class PoolCirculationCard extends PoolCardBase {
         background: var(--primary-text-color); border: 2px solid var(--card-background-color, #fff); box-sizing: border-box;
       }
       .today { display: grid; grid-template-columns: 92px 1fr auto; align-items: center; gap: 10px; margin-top: 14px; }
+      .today .val { font-weight: 500; font-variant-numeric: tabular-nums; color: var(--primary-text-color); }
       .bar { height: 8px; border-radius: 4px; background: var(--pc-track); overflow: hidden; }
       .bar div { height: 100%; background: ${mode.color === MODE.off.color ? "var(--pc-medium)" : mode.color}; border-radius: 4px; }
       .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
@@ -313,6 +332,8 @@ class PoolCirculationCard extends PoolCardBase {
       <div class="row"><span class="muted">Outdoor</span><span class="val">${fmtTemp(a.outdoor_temp)}</span>${outScale}</div>
 
       <div class="today"><span class="muted">Today</span>${today}</div>
+      ${priceRow}
+      ${energyRow}
 
       <div class="actions">
         ${automation ? `<button data-act="automation" class="${automation.state === "on" ? "active" : ""}">

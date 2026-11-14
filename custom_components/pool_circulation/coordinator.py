@@ -148,6 +148,8 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         self._day: date = dt_util.now().date()
         self._minutes_run: float = 0.0     # MEDIUM + HIGH minutes today
         self._minutes_low: float = 0.0     # LOW minutes today
+        self._energy_wh: float = 0.0       # pump energy today, from a power feedback sensor
+        self._cost: float = 0.0            # energy × price today, in the price sensor's currency
         self._last_turned_on: datetime | None = None
         self._last_turned_off: datetime | None = None
         self._extra_filter_until: datetime | None = None
@@ -296,6 +298,8 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             # Pre-1.6 storage kept whole hours only
             self._minutes_run = float(stored.get("minutes_run_today", stored.get("hours_run_today", 0) * 60))
             self._minutes_low = float(stored.get("minutes_low_today", stored.get("hours_low_today", 0) * 60))
+            self._energy_wh = float(stored.get("energy_wh_today", 0))
+            self._cost = float(stored.get("cost_today", 0))
         if stored.get("prices_date") == today.isoformat() and stored.get("prices"):
             self._prices = [INF if p is None else float(p) for p in stored["prices"]]
             self._prices_day = today
@@ -315,6 +319,8 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
                 "date": self._day.isoformat(),
                 "minutes_run_today": round(self._minutes_run, 2),
                 "minutes_low_today": round(self._minutes_low, 2),
+                "energy_wh_today": round(self._energy_wh, 1),
+                "cost_today": round(self._cost, 4),
                 # Kept for anyone reading the store file / downgrading
                 "hours_run_today": int(self._minutes_run // 60),
                 "hours_low_today": int(self._minutes_low // 60),
@@ -350,12 +356,14 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         prev, self._acct_ts = self._acct_ts, now
         if now.date() != self._day:
             _LOGGER.info(
-                "New day: resetting counters (run %.1f h, low %.1f h yesterday)",
-                self._minutes_run / 60, self._minutes_low / 60,
+                "New day: resetting counters (run %.1f h, low %.1f h, %.2f kWh, cost %.2f yesterday)",
+                self._minutes_run / 60, self._minutes_low / 60, self._energy_wh / 1000, self._cost,
             )
             self._day = now.date()
             self._minutes_run = 0.0
             self._minutes_low = 0.0
+            self._energy_wh = 0.0
+            self._cost = 0.0
             midnight = dt_util.start_of_local_day(now)
             prev = max(prev, midnight) if prev else midnight
             self.hass.async_create_task(self._save_state())
@@ -364,6 +372,14 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         elapsed = (now - prev).total_seconds()
         if elapsed <= 0 or elapsed > MAX_ACCOUNTING_GAP_SECONDS:
             return
+        # Energy and cost from the measured power, whatever the switches say
+        power = self._power_w()
+        if power:
+            wh = power * elapsed / 3600
+            self._energy_wh += wh
+            price = self._state_float(CONF_SENSOR_PRICE)
+            if price is not None:
+                self._cost += wh / 1000 * price
         if not self._pump_running():
             return
         if self.current_mode == MODE_LOW:
@@ -910,6 +926,26 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         except ValueError:
             return None
 
+    def _power_w(self) -> float | None:
+        """Pump power in W when the feedback sensor measures power (W or kW)."""
+        value = self._state_float(CONF_SENSOR_PUMP_FEEDBACK)
+        if value is None:
+            return None
+        unit = (self._feedback_unit() or "").strip()
+        if unit == "W":
+            return max(0.0, value)
+        if unit == "kW":
+            return max(0.0, value * 1000)
+        return None
+
+    def _measures_power(self) -> bool:
+        return (self._feedback_unit() or "").strip() in ("W", "kW")
+
+    def _price_unit(self) -> str | None:
+        entity = self.cfg.get(CONF_SENSOR_PRICE)
+        state = self.hass.states.get(entity) if entity else None
+        return state.attributes.get("unit_of_measurement") if state else None
+
     def _feedback_unit(self) -> str | None:
         entity = self.cfg.get(CONF_SENSOR_PUMP_FEEDBACK)
         state = self.hass.states.get(entity) if entity else None
@@ -976,6 +1012,10 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             "hours_remaining": round(max(0.0, (target or 0) - done), 2),
             "must_run": d.must_run if d else False,
             "price": self._state_float(CONF_SENSOR_PRICE),
+            "price_unit": self._price_unit(),
+            # None when there is no power feedback sensor to measure with
+            "energy_today": round(self._energy_wh / 1000, 3) if self._measures_power() else None,
+            "cost_today": round(self._cost, 2) if self._measures_power() else None,
             "is_peak_price": is_peak_hour(prices, now.hour),
             "too_cold": pool is not None and pool < s.algae,
             "freeze_risk": bool(d and d.safety),
