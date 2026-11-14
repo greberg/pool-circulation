@@ -81,7 +81,7 @@ The integration ships two Lovelace cards and loads them automatically (no HACS f
 ```yaml
 type: custom:pool-circulation-card
 ```
-Season toggle, measured speed, the reason, freeze-guard and pump-fault banners, pool and outdoor temperature on scales with the critical / algae / medium / frost thresholds, today's progress, the current price, the pump's kWh and cost today (with a power feedback sensor), and buttons for automation and extra filter.
+Season toggle, measured speed, the reason, freeze-guard and pump-fault banners, pool and outdoor temperature on scales with the critical / algae / medium / frost thresholds, today's progress, the pump's cost so far today with the current price, and its kWh today with the average price paid (with a power feedback sensor; otherwise just the current price), and buttons for automation and extra filter.
 
 ```yaml
 type: custom:pool-circulation-plan-card

@@ -9,7 +9,7 @@
  * automatically when omitted — and an optional `title:`.
  */
 
-const CARD_VERSION = "1.11.0";
+const CARD_VERSION = "1.11.1";
 
 const MODE = {
   off: { label: "Off", color: "var(--pc-off)" },
@@ -234,12 +234,21 @@ class PoolCirculationCard extends PoolCardBase {
     const priceUnit = a.price_unit || "";
     const costUnit = priceUnit.split("/")[0].trim();
     const has = (v) => v !== null && v !== undefined;
-    const priceRow = has(a.price) ? `<div class="today"><span class="muted">Price</span>
+    // Cost so far today (needs a power feedback sensor), with the current price beside it
+    const priceNow = has(a.price)
+      ? `now ${fmtNum(a.price)} ${esc(priceUnit)}${a.is_peak_price ? " · peak" : ""}` : "";
+    const priceRow = has(a.cost_today) ? `<div class="today"><span class="muted">Cost today</span>
+        <span class="val">${fmtNum(a.cost_today)} <span class="muted">${esc(costUnit)}</span></span>
+        <span class="muted">${priceNow}</span></div>`
+      : has(a.price) ? `<div class="today"><span class="muted">Price</span>
         <span class="val">${fmtNum(a.price)} <span class="muted">${esc(priceUnit)}</span></span>
         <span class="muted">${a.is_peak_price ? "peak hour" : ""}</span></div>` : "";
+    // Average price paid per kWh today
+    const avg = has(a.energy_today) && a.energy_today > 0 && has(a.cost_today)
+      ? `avg ${fmtNum(a.cost_today / a.energy_today)} ${esc(priceUnit)}` : "";
     const energyRow = has(a.energy_today) ? `<div class="today"><span class="muted">Energy today</span>
         <span class="val">${fmtNum(a.energy_today)} <span class="muted">kWh</span></span>
-        <span class="muted">${has(a.cost_today) ? `${fmtNum(a.cost_today)} ${esc(costUnit)}` : ""}</span></div>` : "";
+        <span class="muted">${avg}</span></div>` : "";
 
     const fault = a.pump_fault ? `<div class="banner danger"><ha-icon icon="mdi:pump-off"></ha-icon>
         <div><b>${FAULT[a.pump_fault]?.title || "Pump fault"}</b>

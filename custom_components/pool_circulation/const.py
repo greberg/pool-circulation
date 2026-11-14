@@ -1,7 +1,7 @@
 """Constants for Pool Circulation integration."""
 
 DOMAIN = "pool_circulation"
-VERSION = "1.11.0"
+VERSION = "1.11.1"
 
 # ---------------------------------------------------------------------------
 # Configuration keys — entities
