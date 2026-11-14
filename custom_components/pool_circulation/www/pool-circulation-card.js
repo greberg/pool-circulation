@@ -9,7 +9,7 @@
  * automatically when omitted — and an optional `title:`.
  */
 
-const CARD_VERSION = "1.11.1";
+const CARD_VERSION = "1.12.0";
 
 const MODE = {
   off: { label: "Off", color: "var(--pc-off)" },
@@ -189,8 +189,15 @@ class PoolCirculationCard extends PoolCardBase {
     const target = a.target_hours;
     const done = a.done_hours || 0;
     const pct = target ? Math.min(100, (done / target) * 100) : 100;
-    const feedback = a.feedback_value === null || a.feedback_value === undefined ? ""
-      : ` · ${Math.round(a.feedback_value)}${a.feedback_unit ? ` ${a.feedback_unit}` : ""}`;
+    // Live readings: rpm and power when known, else the raw feedback value
+    const isNum = (v) => v !== null && v !== undefined && !Number.isNaN(Number(v));
+    const readings = [];
+    if (isNum(a.rpm)) readings.push(`${Math.round(a.rpm)} rpm`);
+    if (isNum(a.power)) readings.push(a.power >= 1000 ? `${(a.power / 1000).toFixed(2)} kW` : `${Math.round(a.power)} W`);
+    if (!readings.length && isNum(a.feedback_value)) {
+      readings.push(`${Math.round(a.feedback_value)}${a.feedback_unit ? ` ${a.feedback_unit}` : ""}`);
+    }
+    const feedback = readings.map((r) => ` · ${r}`).join("");
     let pumpState;
     if (actualKey && actualKey !== st.state) {
       const startUp = a.speed_settling && actualKey !== "off" && st.state !== "off";

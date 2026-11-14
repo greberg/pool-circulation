@@ -96,7 +96,7 @@ Both find the integration automatically. Add `entity: sensor.pool_circulation_mo
 
 - Home Assistant 2024.8 or newer
 - **Required:** three switches for the pump speeds (low / medium / high), an electricity price sensor that lists today's prices as an attribute (Nordpool, Tibber and similar — hourly or 15-minute), a pool water temperature sensor and an outdoor temperature sensor
-- **Optional:** a pump on/off (enable) switch, a pump feedback sensor (power or rpm), a heat pump (`climate`), a UV lamp switch, a pool cover
+- **Optional:** a pump on/off (enable) switch, a pump feedback sensor (power or rpm), extra pump rpm and power sensors for display, a heat pump (`climate`), a UV lamp switch, a pool cover
 
 ### Speed controller setups
 
@@ -110,7 +110,8 @@ The integration only assumes on/off switches. A typical setup is a dumb pump beh
 When running, the speed is selected first and the controller enabled after; when stopping, the controller is disabled first. These switches only show what the ESP outputs — not what the pump does. Add a **pump feedback sensor** to know that:
 
 - **Runtime** is counted from the feedback, not from the switches.
-- **Energy and cost today**: with a power sensor (W or kW) the pump's kWh today and its cost (kWh × the price at the time) are counted every minute, saved across restarts and shown on the card. Reset at midnight.
+- **Rpm and power on the card**: the feedback sensor can be either. To see both, add the other one as *pump rpm sensor* or *pump power sensor* under Optional devices — they are only displayed, except that the power sensor is also used for kWh and cost.
+- **Energy and cost today**: with a power sensor (W or kW, as feedback or as the pump power sensor) the pump's kWh today and its cost (kWh × the price at the time) are counted every minute, saved across restarts and shown on the card. Reset at midnight.
 - **Pump fault**: if the pump has not followed the switches after 3 minutes, `binary_sensor.pool_pump_fault` turns on, a `pool_circulation_pump_fault` event fires, and the outputs are re-sent (enable pulsed off → on) every 10 minutes until the pump responds.
 - Values above *Pump feedback: running above* (default 10) count as running, so a power sensor (W) and an rpm sensor both work.
 - **Actual speed**: the feedback is also mapped to low / medium / high, and the card shows that speed instead of the selected one. Automatic limits: from 300 W medium and from 500 W high, or from 2000 rpm medium and from 2650 rpm high. Other units, or other pumps, set *medium speed from* / *high speed from* under Advanced.
@@ -145,7 +146,7 @@ One form, used both for setup and later under **Settings → Devices & Services 
 | Algae threshold (pool) | 7°C | At or above: summer filters by price, winter runs low all day. Below: off |
 | Frost guard (outdoor) | 2°C | At or below this the pump runs continuously at low |
 
-**Optional devices** (collapsed): pump on/off switch, pump feedback sensor, heat pump, UV lamp, pool cover. Leave empty if you don't have them. An "actual RPM sensor" from an older version is moved here automatically.
+**Optional devices** (collapsed): pump on/off switch, pump feedback sensor, pump rpm sensor, pump power sensor, heat pump, UV lamp, pool cover. Leave empty if you don't have them. An "actual RPM sensor" from an older version is moved here automatically.
 
 **Advanced** (collapsed): critical pool temperature (4°C), critical pool: medium speed below outdoor (0°C), extra filter duration (60 min), cooldown and minimum on-time (10 / 10 min), heat pump targets (31 / 30°C), pump feedback running threshold (10), pump feedback medium / high speed limits (0 = automatic by unit).
 
@@ -158,7 +159,7 @@ Changing an entity reloads the integration. Changing a setting takes effect righ
 ### Sensors
 | Entity | Description |
 |---|---|
-| `sensor.pool_circulation_mode` | `off` / `low` / `medium` / `high` — attributes include `season`, `rule`, `reason`, `safety`, `winter_tier`, temperatures, price, `is_peak_price`, `target_hours`, `done_hours`, `price_unit`, `energy_today` (kWh), `cost_today`, `actual_speed` (measured by the feedback sensor), `speed_settling`, `feedback_value`, `unavailable_entities` and `plan` (today per hour, used by the cards) |
+| `sensor.pool_circulation_mode` | `off` / `low` / `medium` / `high` — attributes include `season`, `rule`, `reason`, `safety`, `winter_tier`, temperatures, price, `is_peak_price`, `target_hours`, `done_hours`, `price_unit`, `energy_today` (kWh), `cost_today`, `actual_speed` (measured by the feedback sensor), `speed_settling`, `feedback_value`, `rpm`, `power` (W), `unavailable_entities` and `plan` (today per hour, used by the cards) |
 | `sensor.pool_circulation_reason` | Why the pump is in its current mode, in plain words |
 | `sensor.pool_circulation_hours_today` | Hours the pump has run today, all speeds |
 | `sensor.pool_circulation_hours_remaining` | Hours still needed today for the current season |

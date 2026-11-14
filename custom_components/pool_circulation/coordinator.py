@@ -51,6 +51,8 @@ from .const import (
     CONF_SENSOR_OUTDOOR_TEMP,
     CONF_SENSOR_POOL_TEMP,
     CONF_SENSOR_PUMP_FEEDBACK,
+    CONF_SENSOR_PUMP_POWER,
+    CONF_SENSOR_PUMP_RPM,
     CONF_SENSOR_PRICE,
     CONF_SWITCH_CIRCULATION,
     CONF_SWITCH_RPM_HIGH,
@@ -926,20 +928,37 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         except ValueError:
             return None
 
-    def _power_w(self) -> float | None:
-        """Pump power in W when the feedback sensor measures power (W or kW)."""
-        value = self._state_float(CONF_SENSOR_PUMP_FEEDBACK)
-        if value is None:
-            return None
-        unit = (self._feedback_unit() or "").strip()
-        if unit == "W":
-            return max(0.0, value)
-        if unit == "kW":
-            return max(0.0, value * 1000)
+    def _power_key(self) -> str | None:
+        """Config key of the sensor that measures power: the power sensor, else the feedback."""
+        for key in (CONF_SENSOR_PUMP_POWER, CONF_SENSOR_PUMP_FEEDBACK):
+            if self.cfg.get(key) and self._unit(key) in ("W", "kW"):
+                return key
         return None
 
+    def _power_w(self) -> float | None:
+        """Pump power in W, from whichever sensor measures power (W or kW)."""
+        key = self._power_key()
+        value = self._state_float(key) if key else None
+        if value is None:
+            return None
+        return max(0.0, value * (1000 if self._unit(key) == "kW" else 1))
+
+    def _rpm(self) -> float | None:
+        """Pump rpm from the rpm sensor, else from the feedback sensor if it reports rpm."""
+        if self.cfg.get(CONF_SENSOR_PUMP_RPM):
+            return self._state_float(CONF_SENSOR_PUMP_RPM)
+        if (self._unit(CONF_SENSOR_PUMP_FEEDBACK) or "").lower() == "rpm":
+            return self._state_float(CONF_SENSOR_PUMP_FEEDBACK)
+        return None
+
+    def _unit(self, conf_key: str) -> str | None:
+        entity = self.cfg.get(conf_key)
+        state = self.hass.states.get(entity) if entity else None
+        unit = state.attributes.get("unit_of_measurement") if state else None
+        return unit.strip() if isinstance(unit, str) else None
+
     def _measures_power(self) -> bool:
-        return (self._feedback_unit() or "").strip() in ("W", "kW")
+        return self._power_key() is not None
 
     def _price_unit(self) -> str | None:
         entity = self.cfg.get(CONF_SENSOR_PRICE)
@@ -947,9 +966,7 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
         return state.attributes.get("unit_of_measurement") if state else None
 
     def _feedback_unit(self) -> str | None:
-        entity = self.cfg.get(CONF_SENSOR_PUMP_FEEDBACK)
-        state = self.hass.states.get(entity) if entity else None
-        return state.attributes.get("unit_of_measurement") if state else None
+        return self._unit(CONF_SENSOR_PUMP_FEEDBACK)
 
     def _entities(self) -> dict[str, str | None]:
         """Entity IDs the cards need — own entities via the registry, devices from config."""
@@ -968,6 +985,8 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             "circulation": cfg.get(CONF_SWITCH_CIRCULATION) or None,
             "heat_pump": cfg.get(CONF_CLIMATE_HEAT_PUMP) or None,
             "pump_feedback": cfg.get(CONF_SENSOR_PUMP_FEEDBACK) or None,
+            "pump_rpm": cfg.get(CONF_SENSOR_PUMP_RPM) or None,
+            "pump_power": cfg.get(CONF_SENSOR_PUMP_POWER) or None,
         }
 
     # ------------------------------------------------------------------
@@ -1037,6 +1056,8 @@ class PoolCirculationCoordinator(DataUpdateCoordinator):
             "pump_fault_since": self._fault_since.isoformat() if self._fault_since else None,
             "feedback_value": self._state_float(CONF_SENSOR_PUMP_FEEDBACK),
             "feedback_unit": self._feedback_unit(),
+            "power": round(p, 1) if (p := self._power_w()) is not None else None,
+            "rpm": round(r) if (r := self._rpm()) is not None else None,
             "actual_speed": self._actual_speed(),
             "speed_settling": self.current_mode != MODE_OFF and self._speed_settling(now),
             "uv_on": self._state_is_on(CONF_SWITCH_UV_LAMP),

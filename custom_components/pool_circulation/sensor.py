@@ -57,7 +57,10 @@ class PoolCirculationModeSensor(_SensorBase):
     kept out of the recorder.
     """
 
-    _unrecorded_attributes = frozenset({"plan", "entities", "thresholds"})
+    # Bulky or fast-changing attributes stay out of the recorder
+    _unrecorded_attributes = frozenset({
+        "plan", "entities", "thresholds", "feedback_value", "power", "rpm",
+    })
 
     def __init__(self, coordinator, entry):
         super().__init__(coordinator, entry, "mode", "Pool Circulation Mode", "mdi:pump")
@@ -80,6 +83,7 @@ class PoolCirculationModeSensor(_SensorBase):
                 "target_hours", "done_hours", "must_run",
                 "in_cooldown", "in_min_on", "unavailable_entities",
                 "actual_speed", "speed_settling", "feedback_value", "feedback_unit",
+                "power", "rpm",
                 "pump_fault",
                 "thresholds", "plan", "entities",
             )

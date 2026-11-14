@@ -1,7 +1,7 @@
 """Constants for Pool Circulation integration."""
 
 DOMAIN = "pool_circulation"
-VERSION = "1.11.1"
+VERSION = "1.12.0"
 
 # ---------------------------------------------------------------------------
 # Configuration keys — entities
@@ -21,6 +21,10 @@ CONF_COVER_POOL = "cover_pool"
 # Power (W) or rpm sensor showing whether the pump really turns. The speed
 # switches only say what the controller was told, not what the pump does.
 CONF_SENSOR_PUMP_FEEDBACK = "sensor_pump_feedback"
+# Extra readings shown on the card. The power sensor is also used for kWh and
+# cost when the feedback sensor itself doesn't measure power.
+CONF_SENSOR_PUMP_RPM = "sensor_pump_rpm"
+CONF_SENSOR_PUMP_POWER = "sensor_pump_power"
 
 REQUIRED_ENTITIES = (
     CONF_SWITCH_RPM_LOW,
@@ -36,6 +40,8 @@ OPTIONAL_ENTITIES = (
     CONF_SWITCH_UV_LAMP,
     CONF_COVER_POOL,
     CONF_SENSOR_PUMP_FEEDBACK,
+    CONF_SENSOR_PUMP_RPM,
+    CONF_SENSOR_PUMP_POWER,
 )
 ALL_ENTITIES = REQUIRED_ENTITIES + OPTIONAL_ENTITIES
 

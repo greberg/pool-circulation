@@ -39,6 +39,8 @@ from .const import (
     CONF_SENSOR_POOL_TEMP,
     CONF_SENSOR_PRICE,
     CONF_SENSOR_PUMP_FEEDBACK,
+    CONF_SENSOR_PUMP_POWER,
+    CONF_SENSOR_PUMP_RPM,
     CONF_SWITCH_CIRCULATION,
     CONF_SWITCH_RPM_HIGH,
     CONF_SWITCH_RPM_LOW,
@@ -127,6 +129,10 @@ def _schema(cfg: dict, with_name: bool) -> vol.Schema:
         vol.Optional(CONF_SWITCH_CIRCULATION, description=_suggest(cfg, CONF_SWITCH_CIRCULATION)): _SWITCH,
         vol.Optional(CONF_SENSOR_PUMP_FEEDBACK, description=_suggest(cfg, CONF_SENSOR_PUMP_FEEDBACK)):
             EntitySelector(EntitySelectorConfig(domain="sensor")),
+        vol.Optional(CONF_SENSOR_PUMP_RPM, description=_suggest(cfg, CONF_SENSOR_PUMP_RPM)):
+            EntitySelector(EntitySelectorConfig(domain="sensor")),
+        vol.Optional(CONF_SENSOR_PUMP_POWER, description=_suggest(cfg, CONF_SENSOR_PUMP_POWER)):
+            EntitySelector(EntitySelectorConfig(domain="sensor", device_class="power")),
         vol.Optional(CONF_CLIMATE_HEAT_PUMP, description=_suggest(cfg, CONF_CLIMATE_HEAT_PUMP)):
             EntitySelector(EntitySelectorConfig(domain="climate")),
         vol.Optional(CONF_SWITCH_UV_LAMP, description=_suggest(cfg, CONF_SWITCH_UV_LAMP)): _SWITCH,

@@ -29,6 +29,8 @@
             "data": {
               "switch_circulation": "Pump on/off switch",
               "sensor_pump_feedback": "Pump feedback sensor (power or rpm)",
+              "sensor_pump_rpm": "Pump rpm sensor (display)",
+              "sensor_pump_power": "Pump power sensor (display and kWh)",
               "climate_heat_pump": "Heat pump",
               "switch_uv_lamp": "UV lamp",
               "cover_pool": "Pool cover"
@@ -38,7 +40,9 @@
               "climate_heat_pump": "Summer only — kept on, target temperature by price. Never touched in winter.",
               "switch_uv_lamp": "On while the pump runs and the cover is not open.",
               "cover_pool": "Opening the cover starts a 5-minute high-speed burst.",
-              "sensor_pump_feedback": "Measures whether the pump really turns — a power plug (W) or an rpm template. Used for runtime and to raise a fault when the pump doesn't follow the controller."
+              "sensor_pump_feedback": "Measures whether the pump really turns — a power plug (W) or an rpm template. Used for runtime and to raise a fault when the pump doesn't follow the controller.",
+              "sensor_pump_rpm": "Shown on the card. Use it when the feedback sensor is the power sensor, or the other way round.",
+              "sensor_pump_power": "W or kW. Shown on the card and used for kWh and cost today when the feedback sensor isn't a power sensor."
             }
           },
           "advanced": {
@@ -102,6 +106,8 @@
             "data": {
               "switch_circulation": "Pump on/off switch",
               "sensor_pump_feedback": "Pump feedback sensor (power or rpm)",
+              "sensor_pump_rpm": "Pump rpm sensor (display)",
+              "sensor_pump_power": "Pump power sensor (display and kWh)",
               "climate_heat_pump": "Heat pump",
               "switch_uv_lamp": "UV lamp",
               "cover_pool": "Pool cover"
@@ -111,7 +117,9 @@
               "climate_heat_pump": "Summer only — kept on, target temperature by price. Never touched in winter.",
               "switch_uv_lamp": "On while the pump runs and the cover is not open.",
               "cover_pool": "Opening the cover starts a 5-minute high-speed burst.",
-              "sensor_pump_feedback": "Measures whether the pump really turns — a power plug (W) or an rpm template. Used for runtime and to raise a fault when the pump doesn't follow the controller."
+              "sensor_pump_feedback": "Measures whether the pump really turns — a power plug (W) or an rpm template. Used for runtime and to raise a fault when the pump doesn't follow the controller.",
+              "sensor_pump_rpm": "Shown on the card. Use it when the feedback sensor is the power sensor, or the other way round.",
+              "sensor_pump_power": "W or kW. Shown on the card and used for kWh and cost today when the feedback sensor isn't a power sensor."
             }
           },
           "advanced": {

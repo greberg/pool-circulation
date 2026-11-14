@@ -530,6 +530,32 @@ class FeedbackTests(unittest.TestCase):
             self.assertEqual(c3.data["price"], 0.6)
         self.run_async(go())
 
+    def test_rpm_and_power_display_sensors(self):
+        async def go():
+            # Feedback is the rpm template; a separate power sensor gives W and kWh
+            hass = make_hass()
+            hass.states.set("sensor.rpm", "1600", {"unit_of_measurement": "rpm"})
+            hass.states.set("sensor.plug", "0.18", {"unit_of_measurement": "kW"})
+            c = await start(hass, store_winter=True, extra={
+                "sensor_pump_feedback": "sensor.rpm", "sensor_pump_power": "sensor.plug"})
+            self.assertEqual((c.data["rpm"], c.data["power"]), (1600, 180.0))
+            await self.tick(hass, 60)
+            self.assertAlmostEqual(c.data["energy_today"], 0.18, places=3)
+
+            # Feedback is the power plug; rpm sensor only for display
+            hass2 = make_hass()
+            hass2.states.set("sensor.power", "612", {"unit_of_measurement": "W"})
+            hass2.states.set("sensor.rpm", "2900", {"unit_of_measurement": "rpm"})
+            c2 = await start(hass2, store_winter=True, extra={**self.FB, "sensor_pump_rpm": "sensor.rpm"})
+            self.assertEqual((c2.data["rpm"], c2.data["power"]), (2900, 612.0))
+            self.assertEqual(c2.data["actual_speed"], "high")     # from the feedback (W)
+
+            # Neither: nothing to show
+            hass3 = make_hass()
+            c3 = await start(hass3, store_winter=True)
+            self.assertEqual((c3.data["rpm"], c3.data["power"], c3.data["energy_today"]), (None, None, None))
+        self.run_async(go())
+
     def test_speed_selected_before_controller_enabled(self):
         async def go():
             hass = make_hass()
